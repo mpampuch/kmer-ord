@@ -123,6 +123,8 @@ def run_pipeline(
     force: bool = typer.Option(False, "-f","--force", help="Force recomputation even if outputs exist"),
     kmer_length: int = typer.Option(6,"-k", "--kmer", help="K-mer length"),
     threads: int = typer.Option(4, "-t","--threads", help="Number of threads"),
+    matrix_tsv: bool = typer.Option(False, "--matrix-tsv/--no-matrix-tsv", help="Also write the dense k-mer matrix TSV (very large at high k; the sparse .npz is always written)"),
+    reduce_threshold: int = typer.Option(250_000, "--reduce-threshold", help="Feature count above which the matrix is dimensionally reduced before DR"),
 
     # --- DR options ---
     dr_methods: str = typer.Option("umap","--dr", help="Comma-separated DR methods (default: umap)"),
@@ -167,7 +169,7 @@ def run_pipeline(
     operations = [
         FastqToFasta(),
         FastaStats(),
-        KmerCount(kmer_length=kmer_length, threads=threads),
+        KmerCount(kmer_length=kmer_length, threads=threads, write_tsv=matrix_tsv),
         KmerMetrics(chunksize=25000, cpus=threads),
     ]
 
@@ -183,7 +185,8 @@ def run_pipeline(
             pca_dim_red=pca_pre,
             keep_pcs=keep_pcs,
             keep_variance=keep_variance,
-            scale=scale),
+            scale=scale,
+            reduce_threshold=reduce_threshold),
         DimensionalityReduction(
             methods=method_list,
             dims=dims,
@@ -205,6 +208,8 @@ def discover_pipeline(
     input: Path = typer.Option(..., "-i", "--input", help="Input fasta/fastq file"),
     output_dir: Path = typer.Option(..., "-o", "--output", help="Output directory"),
     kmer_length: int = typer.Option(6, "-k", "--kmer"),
+    matrix_tsv: bool = typer.Option(False, "--matrix-tsv/--no-matrix-tsv", help="Also write the dense k-mer matrix TSV (very large at high k; the sparse .npz is always written)"),
+    reduce_threshold: int = typer.Option(250_000, "--reduce-threshold", help="Feature count above which the matrix is dimensionally reduced before DR"),
     dims: int = typer.Option(15, "-d", "--dims", help="High-dimensional embedding size"),
     dr_method: str = typer.Option("umap", "--dr"),
     scale: str = typer.Option("auto", "-s","--scale", help="Dataset scale presets for DR hyperparameters (auto, small, medium, large, default)"),
@@ -262,14 +267,15 @@ def discover_pipeline(
     operations = [
         FastqToFasta(),
         FastaStats(),
-        KmerCount(kmer_length=kmer_length, threads=threads),
+        KmerCount(kmer_length=kmer_length, threads=threads, write_tsv=matrix_tsv),
         KmerMetrics(),
         MatrixPreprocessing(
             normalisations=norm_list,
             pca_dim_red=pca_pre,
             keep_pcs=keep_pcs,
             keep_variance=keep_variance,
-            scale=scale),
+            scale=scale,
+            reduce_threshold=reduce_threshold),
         DimensionalityReduction(
             methods=method_list,
             dims=dims,
@@ -540,14 +546,15 @@ def kmer_count_cmd(
     output_dir: Path = typer.Option(..., "-o","--output", help="Output directory"),
     kmer_length: int = typer.Option(6, "-k", "--kmer", help="K-mer length"),
     threads: int = typer.Option(1, "-t", "--threads", help="Number of threads for counting"),
+    matrix_tsv: bool = typer.Option(False, "--matrix-tsv/--no-matrix-tsv", help="Also write the dense k-mer matrix TSV (very large at high k; the sparse .npz is always written)"),
     force: bool = typer.Option(False, "-f","--force", help="Recalculate even if output exists")):
     """
-    Count k-mers for a fasta file and save tsv matrix.
+    Count k-mers for a fasta file and save a sparse .npz matrix (and optionally a dense TSV).
     """
     context = Context(input, output_dir, force=force, threads=threads)
     from kmer_ord.workflow.operations import KmerCount
 
-    operation = KmerCount(kmer_length=kmer_length, threads=threads)
+    operation = KmerCount(kmer_length=kmer_length, threads=threads, write_tsv=matrix_tsv)
     operation.run(context)
 
     info(f"K-mer counting complete. Matrix saved at: {context.get('kmer_matrix')}")
@@ -590,6 +597,7 @@ def dr_cmd(
     pca_pre: bool = typer.Option(False, "--pca-pre", help="Apply PCA before DR"),
     keep_pcs: int = typer.Option(None, "--keep-pcs"),
     keep_variance: float = typer.Option(None, "--keep-variance"),
+    reduce_threshold: int = typer.Option(250_000, "--reduce-threshold", help="Feature count above which the matrix is dimensionally reduced before DR"),
     screen_params: bool = typer.Option(False, "--screen_params", help="Run parameter screening for supported DR methods"),
     threads: int = typer.Option(4, "-t","--threads", help="Number of threads"),
 ):
@@ -614,6 +622,7 @@ def dr_cmd(
             keep_pcs=keep_pcs,
             keep_variance=keep_variance,
             scale=scale,
+            reduce_threshold=reduce_threshold,
         ),
         DimensionalityReduction(
             methods=method_list,

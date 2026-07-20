@@ -1,70 +1,78 @@
 # src/kmer_ord/dr/preprocess.py
-import pandas as pd
+"""
+Normalization of k-mer count matrices.
 
-def preprocess_data(df: pd.DataFrame, method: str) -> pd.DataFrame:
+Accepts a scipy sparse matrix, numpy array, or pandas DataFrame and always
+returns a ``float32`` numpy array (row = sample, column = feature). The
+row-independent transforms (``raw``/``relative``/``log``/``clr``) live in
+:func:`apply_row_normalization` so the dense small-k path here and the blocked
+large-k path in :mod:`kmer_ord.dr.reduce` compute identical values.
+"""
+import numpy as np
+
+# All supported normalization methods (used to expand the "all" shortcut).
+ALL_NORMALISATIONS = ("raw", "relative", "log", "clr", "zscore")
+
+
+def _to_dense_float32(matrix) -> np.ndarray:
+    """Materialise a sparse/array/DataFrame input as a dense float32 array."""
+    import scipy.sparse as sp
+
+    if sp.issparse(matrix):
+        return matrix.toarray().astype(np.float32, copy=False)
+
+    # pandas DataFrame (has .to_numpy) or plain ndarray / array-like.
+    to_numpy = getattr(matrix, "to_numpy", None)
+    if callable(to_numpy):
+        return to_numpy(dtype=np.float32)
+    return np.asarray(matrix, dtype=np.float32)
+
+
+def apply_row_normalization(X: np.ndarray, method: str) -> np.ndarray:
     """
-    Apply normalization to k-mer matrix (DataFrame of numeric k-mer counts).
-    Returns a DataFrame (rows = samples, columns = features), preserving sample IDs.
+    Apply a row-independent normalization to a dense float32 array in place
+    where possible. Because every transform here depends only on the values
+    within a row, it is safe to apply to a block of rows in isolation, which is
+    what the blocked IncrementalPCA path relies on for CLR.
     """
-    import numpy as np
-    import pandas as pd
-    from sklearn.preprocessing import StandardScaler
-
-    X = df.copy().astype(np.float32)  # ensure float32
-
     if method == "raw":
         return X
 
-    elif method == "relative":
+    if method == "relative":
         row_sums = X.sum(axis=1)
-        row_sums[row_sums == 0] = 1
-        X = X.div(row_sums, axis=0)
+        row_sums[row_sums == 0] = 1.0
+        X /= row_sums[:, None]
         return X
 
-    elif method == "log":
-        X = np.log1p(X)
-        return pd.DataFrame(X, index=df.index, columns=df.columns)
+    if method == "log":
+        return np.log1p(X)
 
-    elif method == "clr":
-        # Add small pseudocount to avoid log(0)
+    if method == "clr":
+        # CLR = log(x / geometric_mean(x)) = log(x) - mean(log(x)).
+        # The pseudocount avoids log(0); computing in log-space avoids the
+        # extra exp()/division copies the original implementation allocated.
         X += 1e-9
-        geometric_mean = np.exp(np.mean(np.log(X), axis=1))
-        X = np.log(X.div(geometric_mean, axis=0))
-        return X
+        log_X = np.log(X)
+        log_X -= log_X.mean(axis=1, keepdims=True)
+        return log_X
 
-    elif method == "zscore":
-        scaler = StandardScaler()
-        X_scaled = scaler.fit_transform(X)
-        return pd.DataFrame(X_scaled, index=df.index, columns=df.columns)
-
-    else:
-        raise ValueError(f"Unknown normalization method: {method}")
+    raise ValueError(f"Unknown normalization method: {method}")
 
 
-def reduce_dimensions_with_pca(df: pd.DataFrame,
-                               keep_pcs: int | None = None,
-                               keep_variance: float | None = None) -> pd.DataFrame:
+def preprocess_data(matrix, method: str) -> np.ndarray:
     """
-    Apply PCA reduction to a DataFrame either by fixed number of PCs
-    or by cumulative variance threshold. Returns DataFrame with sample IDs as index.
+    Normalize a k-mer count matrix and return a dense ``float32`` array.
+
+    Used for the small-k (below-threshold) path; large-k inputs are reduced
+    without full densification in :mod:`kmer_ord.dr.reduce`.
     """
-    import numpy as np
-    import pandas as pd
-    from sklearn.decomposition import PCA
+    if method == "zscore":
+        # Column standardization needs global (per-feature) statistics, so it is
+        # handled separately from the row-independent transforms above.
+        from sklearn.preprocessing import StandardScaler
 
-    if keep_pcs is None and keep_variance is None:
-        raise ValueError("Either keep_pcs or keep_variance must be specified.")
+        X = _to_dense_float32(matrix)
+        return StandardScaler().fit_transform(X).astype(np.float32, copy=False)
 
-    if keep_pcs is not None:
-        pca = PCA(n_components=keep_pcs)
-    else:
-        # fit PCA with all components to compute cumulative variance
-        pca_full = PCA()
-        X_full = pca_full.fit_transform(df.values)
-        cumulative_variance = np.cumsum(pca_full.explained_variance_ratio_)
-        keep_pcs = np.searchsorted(cumulative_variance, keep_variance) + 1
-        pca = PCA(n_components=keep_pcs)
-
-    X_pca = pca.fit_transform(df.values)
-    columns = [f"PC{i+1}" for i in range(X_pca.shape[1])]
-    return pd.DataFrame(X_pca, index=df.index, columns=columns)
+    X = _to_dense_float32(matrix)
+    return apply_row_normalization(X, method)

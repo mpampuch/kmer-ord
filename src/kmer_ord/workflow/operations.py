@@ -52,13 +52,14 @@ class KmerCount(Operation):
     requires = ["fasta"]
     produces = ["kmer_matrix"]
 
-    def __init__(self, kmer_length, threads=1):
+    def __init__(self, kmer_length, threads=1, write_tsv=False):
         self.kmer_length = kmer_length
         self.threads = threads
+        self.write_tsv = write_tsv
 
     def run(self, context):
         output_path = context.artifact_path(f"{self.kmer_length}mer_matrix",
-                                            subdir="kmer", suffix=".tsv")
+                                            subdir="kmer", suffix=".npz")
 
         with BenchmarkTimer(label=f"{self.name}_{self.kmer_length}mer",
                             input_file=context.get("fasta"),
@@ -69,17 +70,19 @@ class KmerCount(Operation):
             else:
                 run_kmer_counter(
                     input_file=context.get("fasta"),
-                    output_tsv=output_path,
+                    output_matrix=output_path,
                     kmer_length=self.kmer_length,
-                    num_threads=self.threads)
+                    num_threads=self.threads,
+                    write_tsv=self.write_tsv)
 
         context.register("kmer_matrix", output_path)
 
 # -----------------------------
 # DR
 
-from kmer_ord.dr.loader import load_matrix
-from kmer_ord.dr.preprocess import preprocess_data, reduce_dimensions_with_pca
+from kmer_ord.dr.loader import load_matrix_any
+from kmer_ord.dr.preprocess import preprocess_data, ALL_NORMALISATIONS
+from kmer_ord.dr.reduce import reduce_matrix, DEFAULT_N_COMPONENTS
 from kmer_ord.dr.methods import run_dr_methods
 
 ## do the numpy np.save etc inside the function preprocess data?
@@ -96,6 +99,7 @@ class MatrixPreprocessing(Operation):
         keep_variance=None,
         scale="auto",
         max_memory_gb=None,
+        reduce_threshold=250_000,
     ):
         self.normalisations = normalisations
         self.pca_dim_red = pca_dim_red
@@ -103,17 +107,25 @@ class MatrixPreprocessing(Operation):
         self.keep_variance = keep_variance
         self.scale = scale
         self.max_memory_gb = max_memory_gb
+        # Above this feature count, reduce dimensionality before DR so the full
+        # dense normalized matrix is never materialised (see kmer_ord.dr.reduce).
+        self.reduce_threshold = reduce_threshold
 
     def run(self, context):
         import numpy as np
-        # Load full matrix including sequence_id column
+        # Load the k-mer matrix as a sparse CSR matrix plus its row labels.
         matrix_path = context.get("kmer_matrix")
-        matrix = load_matrix(matrix_path)
+        matrix, sequence_ids = load_matrix_any(matrix_path)
 
-        #if "sequence_id" not in matrix.columns:
-        #    raise RuntimeError("Input matrix must contain 'sequence_id' column.")
-
-        sequence_ids = matrix.index.to_numpy()
+        n_features = matrix.shape[1]
+        # Reduce when the user asked for it, or automatically for wide matrices.
+        should_reduce = self.pca_dim_red or (n_features > self.reduce_threshold)
+        n_components = self.keep_pcs or DEFAULT_N_COMPONENTS
+        if should_reduce:
+            context.logger.info(
+                f"Reducing {n_features} features to <= {n_components} components "
+                f"before DR (pca_dim_red={self.pca_dim_red}, "
+                f"threshold={self.reduce_threshold}).")
 
         output_dir = context.output_dir / "matrices"
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -124,7 +136,7 @@ class MatrixPreprocessing(Operation):
         normalisations = (
             self.normalisations
             if "all" not in self.normalisations
-            else ALL_METHODS
+            else ALL_NORMALISATIONS
         )
 
         for norm in normalisations:
@@ -135,16 +147,16 @@ class MatrixPreprocessing(Operation):
             if out_path.exists() and not context.force:
                 outputs.append(out_path)
             else:
-                # preprocess (drop sequence_id for numeric operations)
-                # X = preprocess_data(matrix.drop(columns="sequence_id"), norm)
-                X = preprocess_data(matrix, norm)
-
-                if self.pca_dim_red:
-                    X = reduce_dimensions_with_pca(
-                        X,
-                        keep_pcs=self.keep_pcs,
+                if should_reduce:
+                    # Bounded-memory: never forms the full dense normalized matrix.
+                    X = reduce_matrix(
+                        matrix,
+                        norm,
+                        n_components=n_components,
                         keep_variance=self.keep_variance,
                     )
+                else:
+                    X = preprocess_data(matrix, norm)
 
                 np.save(out_path, X)
                 outputs.append(out_path)

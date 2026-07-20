@@ -34,8 +34,17 @@ dependencies = [
     "tqdm"
 ]
 
+[project.optional-dependencies]
+test = ["pytest"]
+
 [project.scripts]
 kmer-ord = "kmer_ord.cli.main:app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "slow: end-to-end memory-regression tests that run the full pipeline",
+]
 
 [tool.setuptools]
 package-dir = {"" = "src"}

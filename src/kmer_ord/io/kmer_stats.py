@@ -43,20 +43,49 @@ def calculate_kmer_metrics_chunk(kmer_df: pd.DataFrame) -> pd.DataFrame:
         index=kmer_df.index)
     return metrics_chunk
 
-def process_kmer_file(
-    input_file: str,
-    output_file: str = None,
-    chunksize: int = 25000,
-    cpus: int = 1,
-    total_rows: int = None,) -> pd.DataFrame:
-    """Process a k-mer matrix to compute metrics, optionally parallelized."""
-    from concurrent.futures import ProcessPoolExecutor
+def calculate_kmer_metrics_sparse(matrix, sequence_ids) -> pd.DataFrame:
+    """
+    Compute the same per-sequence metrics as :func:`calculate_kmer_metrics_chunk`
+    directly from a scipy CSR matrix, without densifying, upcasting to float64
+    over the full matrix, or paying pandas' millions-of-columns overhead.
+    """
     import numpy as np
-    section("Calculating k-mer metrics")
-    if output_file:
-        os.makedirs(os.path.dirname(output_file), exist_ok=True)
-        if os.path.exists(output_file):
-            os.remove(output_file)
+
+    matrix = matrix.tocsr()
+    n_rows = matrix.shape[0]
+
+    counts = matrix.data.astype(np.float64)
+    row_nnz = np.diff(matrix.indptr)                       # num_unique_kmers
+    row_sums = np.asarray(matrix.sum(axis=1)).ravel()      # total count per row
+
+    # Map every stored (non-zero) value back to its row so we can reduce
+    # per-row with bincount (robust to empty rows and trailing empty rows).
+    row_index = np.repeat(np.arange(n_rows), row_nnz)
+    row_sums_per_nnz = np.repeat(row_sums, row_nnz)
+
+    if counts.size:
+        probs = counts / row_sums_per_nnz
+        shannon_nats = -np.bincount(
+            row_index, weights=probs * np.log(probs), minlength=n_rows)
+        shannon_bits = -np.bincount(
+            row_index, weights=probs * np.log2(probs), minlength=n_rows)
+    else:
+        shannon_nats = np.zeros(n_rows)
+        shannon_bits = np.zeros(n_rows)
+
+    return pd.DataFrame(
+        {"total_nonzero_kmers": row_sums.astype("int64"),
+         "num_unique_kmers": row_nnz.astype("int64"),
+         "shannon_evenness": shannon_nats,
+         "shannon_diversity": shannon_bits},
+        # Name the index "sequence_id" so the written TSV matches the dense path
+        # and downstream FeatureMerge can find the id column.
+        index=pd.Index(sequence_ids, name="sequence_id"))
+
+
+def _metrics_from_table(input_file: str, chunksize: int, cpus: int) -> pd.DataFrame:
+    """Legacy dense TSV/CSV path (chunked pandas)."""
+    from concurrent.futures import ProcessPoolExecutor
 
     dtypes = build_dtypes(input_file)
     reader = pd.read_csv(input_file, sep="\t", index_col=0, dtype=dtypes, chunksize=chunksize)
@@ -70,7 +99,30 @@ def process_kmer_file(
             futures = [executor.submit(calculate_kmer_metrics_chunk, chunk) for chunk in chunks]
             results = [f.result() for f in futures]  # collect in submission order
 
-    combined_metrics = pd.concat(results)
+    return pd.concat(results)
+
+
+def process_kmer_file(
+    input_file: str,
+    output_file: str = None,
+    chunksize: int = 25000,
+    cpus: int = 1,
+    total_rows: int = None,) -> pd.DataFrame:
+    """Process a k-mer matrix to compute metrics, optionally parallelized."""
+    from pathlib import Path
+    section("Calculating k-mer metrics")
+    if output_file:
+        os.makedirs(os.path.dirname(output_file), exist_ok=True)
+        if os.path.exists(output_file):
+            os.remove(output_file)
+
+    if Path(input_file).suffix.lower() == ".npz":
+        from kmer_ord.io.sparse_matrix import load_sparse_matrix
+
+        matrix, sequence_ids, _ = load_sparse_matrix(input_file)
+        combined_metrics = calculate_kmer_metrics_sparse(matrix, sequence_ids)
+    else:
+        combined_metrics = _metrics_from_table(input_file, chunksize, cpus)
 
     if output_file:
         combined_metrics.to_csv(output_file, sep="\t")
