@@ -1,0 +1,13 @@
+flowchart TD
+  A[Start: run_kmer_counter(input_fasta, output_tsv, k, threads)] --> B[Create temporary directory]
+  B --> C[Run Rust binary `kmer-counter` in TOOLS_ENV]
+  C --> C1["kmer-counter --file <input_fasta> --ids <temp>/sequence_headers.txt --klength <k> --out <temp>/kmer_counts.npy --collapse 1"]
+  C --> D[Wait for process completion]
+  D --> E[Load NumPy output <temp>/kmer_counts.npy into memory as uint32]
+  E --> F[Extract sequence headers from input FASTA using Bio.SeqIO.parse]
+  F --> G[Generate canonical k-mer keys (canonical_kmers(k)) — collapse revcomp pairs]
+  G --> H[Compose TSV output]
+  H --> H1[Write header row: sequence_id + canonical k-mer columns]
+  H --> H2[Write one row per sequence: sequence_id + counts for each k-mer]
+  H --> I[Delete temporary directory and temporary files]
+  I --> J[Return path to TSV output]

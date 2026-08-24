@@ -1,0 +1,20 @@
+
+
+flowchart TD
+  A[Input fastq/fasta file] --> B[Fastq -> Fasta (FastqToFasta)]
+  B --> C[Fasta stats (FastaStats) — per-sequence + overall]
+  C --> D[K-mer counting (KmerCount / run_kmer_counter)]
+  D --> E[K-mer metrics (KmerMetrics / kmer_stats)]
+  E --> F{Optional classification}
+  F -->|--tiara enabled--> G[Tiara taxonomic classification (run_tiara)]
+  F -->|--rDNA enabled--> H[rDNA-miner extraction/classify (run_rdna_miner)]
+  E --> I[Matrix preparation: save matrix (MatrixPreprocessing)]
+  I --> J[Preprocess per-normalisation (preprocess_data) · optional PCA]
+  J --> K[Save numeric matrices & sequence_id arrays (.npy)]
+  K --> L[DimensionalityReduction (run_dr_methods)]
+  L --> L1[Optional parameter screening (_run_parameter_screen + screen_grid.resolve_method_grid)]
+  L --> L2[Per-method embeddings + optional graphs (_run_single_method)]
+  L2 --> M[Merge embeddings per-normalisation → merged TSV]
+  M --> N[FeatureMerge (merge kmer metrics, fasta stats, tiara, rDNA)]
+  N --> O[SpatialiteDatabase (create DB + populate fasta, features, coordinates)]
+  O --> P[Downstream: visualise, bin (Dash), cluster]
