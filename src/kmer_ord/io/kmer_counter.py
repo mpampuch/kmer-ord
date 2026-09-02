@@ -26,7 +26,7 @@ def canonical_kmers(k):
 
 
 def run_kmer_counter(input_file, output_tsv, kmer_length, num_threads,
-                     script_name="kmer-counter"):
+                     script_name="kmer-counter", log_dir=None):
     """
     Run kmer-counter from TOOLS_ENV and produce TSV output with per-step benchmarking.
     """
@@ -37,9 +37,11 @@ def run_kmer_counter(input_file, output_tsv, kmer_length, num_threads,
     section(f"Running k-mer counting (k={kmer_length})...")
     temp_dir = Path(tempfile.mkdtemp(prefix="kmer_counter_temp_"))
     input_args = f"--input {input_file} --kmer {kmer_length} --threads {num_threads}"
+    timer_kw = dict(script_name=script_name, input_file=input_file, input_args=input_args)
+    if log_dir is not None:
+        timer_kw["log_dir"] = log_dir
 
-    with BenchmarkTimer("Kmer_Counter_Run", script_name=script_name,
-                        input_file=input_file, input_args=input_args):
+    with BenchmarkTimer("Kmer_Counter_Run", **timer_kw):
         cmd = ["kmer-counter",
                "--file", str(input_file),
                "--ids", str(temp_dir / "sequence_headers.txt"),
@@ -55,33 +57,28 @@ def run_kmer_counter(input_file, output_tsv, kmer_length, num_threads,
 
     # load numpy
     npy_file = temp_dir / "kmer_counts.npy"
-    with BenchmarkTimer("Numpy_Loading", script_name=script_name,
-                        input_file=input_file, input_args=input_args):
+    with BenchmarkTimer("Numpy_Loading", **timer_kw):
         kmer_data = np.load(npy_file, mmap_mode='r').astype(np.uint32)
         info(f"npy loaded uint32: {kmer_data.shape} {format_size(kmer_data.nbytes)}")
 
     info("Extracting sequence headers from fasta...")
-    with BenchmarkTimer("Sequence_Headers_Extraction", script_name=script_name,
-                        input_file=input_file, input_args=input_args):
+    with BenchmarkTimer("Sequence_Headers_Extraction", **timer_kw):
         with ThreadPoolExecutor(max_workers=num_threads) as executor:
             sequence_headers = list(executor.map(lambda r: r.id, SeqIO.parse(input_file, "fasta")))
 
     info("Generating canonical k-mers...")
-    with BenchmarkTimer("Canonical_Kmers_Generation", script_name=script_name,
-                        input_file=input_file, input_args=input_args):
+    with BenchmarkTimer("Canonical_Kmers_Generation", **timer_kw):
         kmer_keys = canonical_kmers(kmer_length)
 
     info("Generating output tsv...")
-    with BenchmarkTimer("TSV_Composition", script_name=script_name,
-                        input_file=input_file, input_args=input_args):
+    with BenchmarkTimer("TSV_Composition", **timer_kw):
         os.makedirs(Path(output_tsv).parent, exist_ok=True)
         with open(output_tsv, "w") as f:
             f.write("sequence_id\t" + "\t".join(kmer_keys) + "\n")
             for i in range(len(kmer_data)):
                 f.write(sequence_headers[i] + "\t" + "\t".join(map(str, kmer_data[i])) + "\n")
 
-    with BenchmarkTimer("Cleanup", script_name=script_name,
-                        input_file=input_file, input_args=input_args):
+    with BenchmarkTimer("Cleanup", **timer_kw):
         shutil.rmtree(temp_dir)
 
     info(f"Output saved: {output_tsv}")

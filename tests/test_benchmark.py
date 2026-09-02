@@ -82,6 +82,7 @@ def test_log_row_written_with_schema(tmp_path):
     assert header == LOG_COLUMNS
     record = dict(zip(header, row))
     assert record["stage_label"] == "log_test"
+    assert record["parent_label"] == "N/A"
     assert record["script_name"] == "test_script"
     assert record["input_rows"] == "123"
     assert record["input_cols"] == "456"
@@ -111,6 +112,33 @@ def test_old_format_log_rotated_not_corrupted(tmp_path):
     assert "legacy_col" in rotated[0].read_text()
 
 
+def test_compatible_schema_upgraded_in_place(tmp_path):
+    """Adding parent_label must rewrite the existing log in place so
+    benchmarks/benchmark_log.tsv keeps its history instead of rotating."""
+    log_file = tmp_path / "benchmark_log.tsv"
+    old_header = [c for c in LOG_COLUMNS if c != "parent_label"]
+    old_row = {c: "old" if c != "wall_time_s" else "1.0" for c in old_header}
+    old_row["stage_label"] = "bench_small_kmer_stats"
+    old_row["script_name"] = "run_benchmarks"
+    with open(log_file, "w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=old_header, delimiter="\t")
+        writer.writeheader()
+        writer.writerow(old_row)
+
+    with BenchmarkTimer(label="bench_small_pca_pre", log_dir=str(tmp_path),
+                        script_name="run_benchmarks"):
+        pass
+
+    assert list(tmp_path.glob("benchmark_log_legacy*.tsv")) == []
+    with open(log_file) as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+    assert list(rows[0].keys()) == LOG_COLUMNS
+    assert rows[0]["stage_label"] == "bench_small_kmer_stats"
+    assert rows[0]["parent_label"] == "N/A"
+    assert rows[1]["stage_label"] == "bench_small_pca_pre"
+    assert rows[1]["parent_label"] == "N/A"
+
+
 def test_multiple_rows_append(tmp_path):
     for i in range(2):
         with BenchmarkTimer(label=f"run{i}", log_dir=str(tmp_path)):
@@ -122,3 +150,79 @@ def test_multiple_rows_append(tmp_path):
     assert len(rows) == 3  # header + 2 data rows
     assert rows[1][LOG_COLUMNS.index("stage_label")] == "run0"
     assert rows[2][LOG_COLUMNS.index("stage_label")] == "run1"
+
+
+def test_nested_timers_record_parent_label(tmp_path):
+    with BenchmarkTimer(label="parent", log_dir=str(tmp_path), script_name="project"):
+        with BenchmarkTimer(label="child", log_dir=str(tmp_path), script_name="project"):
+            pass
+
+    log_file = tmp_path / "benchmark_log.tsv"
+    with open(log_file) as f:
+        rows = list(csv.reader(f, delimiter="\t"))
+    header = rows[0]
+    assert header == LOG_COLUMNS
+    child, parent = dict(zip(header, rows[1])), dict(zip(header, rows[2]))
+    assert child["stage_label"] == "child"
+    assert child["parent_label"] == "parent"
+    assert parent["stage_label"] == "parent"
+    assert parent["parent_label"] == "N/A"
+
+
+def test_matrix_context_writes_under_output_dir(tmp_path):
+    from kmer_ord.workflow.context import MatrixContext
+
+    matrix = tmp_path / "m.tsv"
+    matrix.write_text("sequence_id\tk1\nr1\t1\n")
+    out = tmp_path / "run"
+    ctx = MatrixContext(matrix, out, script_name="dr")
+    with ctx.benchmark_timer("leaf"):
+        pass
+
+    log_file = out / "benchmarking" / "benchmark_log.tsv"
+    assert log_file.exists()
+    with open(log_file) as f:
+        rows = list(csv.reader(f, delimiter="\t"))
+    record = dict(zip(rows[0], rows[1]))
+    assert record["stage_label"] == "leaf"
+    assert record["script_name"] == "dr"
+    assert record["parent_label"] == "N/A"
+
+
+def test_run_dr_methods_writes_parent_and_leaf_rows(tmp_path):
+    import numpy as np
+    from kmer_ord.dr.methods import run_dr_methods
+
+    X = np.random.default_rng(0).normal(size=(40, 10)).astype(np.float32)
+    log_dir = str(tmp_path)
+    with BenchmarkTimer(
+        label="dimensionality_reduction_clr",
+        log_dir=log_dir,
+        script_name="project",
+    ):
+        run_dr_methods(
+            X=X,
+            methods=["pca"],
+            dims=2,
+            seed=0,
+            scale="small",
+            screen_params=False,
+            output_dir=tmp_path / "dr",
+            normalisation="clr",
+            input_name="test",
+            sequence_ids=[f"s{i}" for i in range(40)],
+            log_dir=log_dir,
+            script_name="project",
+        )
+
+    log_file = tmp_path / "benchmark_log.tsv"
+    with open(log_file) as f:
+        rows = list(csv.reader(f, delimiter="\t"))
+    records = [dict(zip(rows[0], row)) for row in rows[1:]]
+    labels = [r["stage_label"] for r in records]
+    assert "dr_clr_pca" in labels
+    assert "dimensionality_reduction_clr" in labels
+    leaf = next(r for r in records if r["stage_label"] == "dr_clr_pca")
+    parent = next(r for r in records if r["stage_label"] == "dimensionality_reduction_clr")
+    assert leaf["parent_label"] == "dimensionality_reduction_clr"
+    assert parent["parent_label"] == "N/A"

@@ -71,3 +71,36 @@ def test_ipca_output_is_float32(clr_matrix):
 def test_unknown_pca_method_raises(clr_matrix):
     with pytest.raises(ValueError, match="Unknown PCA method"):
         reduce_dimensions_with_pca(clr_matrix, keep_pcs=3, method="nope")
+
+
+def test_pca_ignores_batch_size(clr_matrix):
+    expected = reduce_dimensions_with_pca(clr_matrix, keep_pcs=3, method="pca")
+    result = reduce_dimensions_with_pca(
+        clr_matrix, keep_pcs=3, method="pca", batch_size=16
+    )
+    pd.testing.assert_frame_equal(expected, result)
+
+
+def test_cli_pca_pre_method_rejects_unknown():
+    from typer.testing import CliRunner
+    from kmer_ord.cli.main import app
+
+    result = CliRunner().invoke(
+        app,
+        ["project", "-i", "x.fa", "-o", "out", "--pca-pre-method", "nope"],
+    )
+    assert result.exit_code != 0
+    message = (result.output or str(result.exception)).lower()
+    assert "nope" in message and ("pca" in message or "ipca" in message)
+
+
+def test_cli_pca_pre_method_help_lists_choices():
+    from typer.testing import CliRunner
+    from kmer_ord.cli.main import app
+
+    result = CliRunner().invoke(app, ["project", "--help"])
+    assert result.exit_code == 0
+    assert "--pca-pre-method" in result.output
+    assert "pca" in result.output
+    assert "ipca" in result.output
+    assert "--pca-pre-batch-size" in result.output

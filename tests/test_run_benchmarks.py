@@ -38,3 +38,29 @@ def test_synthetic_matrix_shape_and_dtype(tmp_path):
 
 def test_all_stages_registered():
     assert set(run_benchmarks.STAGES) == set(run_benchmarks.STAGE_NAMES)
+
+
+def test_run_stage_appends_to_explicit_log_dir(tmp_path):
+    """The standalone harness must keep writing to the --log-dir it is given
+    (benchmarks/ by default), including after the parent_label schema change."""
+    matrix = tmp_path / "m.tsv"
+    run_benchmarks.generate_synthetic_matrix(matrix, n_reads=40, n_features=12, seed=1)
+    log_dir = tmp_path / "logs"
+    workdir = tmp_path / "work"
+    run_benchmarks.run_stage_in_this_process(
+        stage="preprocess_clr",
+        matrix_path=matrix,
+        tier="small",
+        log_dir=log_dir,
+        workdir=workdir,
+    )
+    log_file = log_dir / "benchmark_log.tsv"
+    assert log_file.exists()
+    import csv
+    from kmer_ord.utils.benchmark import LOG_COLUMNS
+    with open(log_file) as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+    assert list(rows[0].keys()) == LOG_COLUMNS
+    assert rows[0]["script_name"] == "run_benchmarks"
+    assert rows[0]["stage_label"] == "bench_small_preprocess_clr"
+    assert rows[0]["parent_label"] == "N/A"

@@ -10,6 +10,7 @@ freed before the block exits (the common case for numeric pipelines) is
 invisible to a delta, and child processes (ProcessPoolExecutor workers, the
 Rust k-mer counter) are invisible to the parent's own RSS entirely.
 """
+import contextvars
 import csv
 import functools
 import os
@@ -30,6 +31,7 @@ LOG_COLUMNS = [
     "git_commit",
     "script_name",
     "stage_label",
+    "parent_label",
     "input_file",
     "input_file_size_bytes",
     "input_rows",
@@ -42,6 +44,12 @@ LOG_COLUMNS = [
     "end_rss_bytes",
     "ru_maxrss_bytes",
 ]
+
+# Innermost active timer label, so nested BenchmarkTimer rows can record
+# which parent stage they belong to without every call site passing it.
+_current_parent: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "benchmark_parent", default=None
+)
 
 _SAMPLE_INTERVAL_S = 0.05
 
@@ -150,6 +158,8 @@ class BenchmarkTimer:
         os.makedirs(self.log_dir, exist_ok=True)
 
         self._sampler = None
+        self._parent_token = None
+        self.parent_label = None
         self.start_time = None
         self.start_cpu_time = None
         self.wall_time = None
@@ -164,6 +174,9 @@ class BenchmarkTimer:
         self.input_cols = n_cols
 
     def __enter__(self):
+        # snapshot the outer label before we become the current parent
+        self.parent_label = _current_parent.get()
+        self._parent_token = _current_parent.set(self.label)
         self._sampler = _PeakRssSampler()
         self._sampler.start()
         self.start_time = time.time()
@@ -171,24 +184,54 @@ class BenchmarkTimer:
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        self.wall_time = time.time() - self.start_time
-        self.cpu_time = time.process_time() - self.start_cpu_time
-        self._sampler.stop()
-        self.peak_rss_self = self._sampler.peak_self
-        self.peak_rss_children = self._sampler.peak_children
-        self.end_rss = psutil.Process().memory_info().rss
+        try:
+            self.wall_time = time.time() - self.start_time
+            self.cpu_time = time.process_time() - self.start_cpu_time
+            self._sampler.stop()
+            self.peak_rss_self = self._sampler.peak_self
+            self.peak_rss_children = self._sampler.peak_children
+            self.end_rss = psutil.Process().memory_info().rss
+            self._log_metrics()
+        finally:
+            if self._parent_token is not None:
+                _current_parent.reset(self._parent_token)
 
-        self._log_metrics()
+    def _prepare_log_file(self):
+        """Make sure an existing log matches LOG_COLUMNS before appending.
 
-    def _rotate_legacy_log(self):
-        """Move aside an existing log whose header doesn't match LOG_COLUMNS.
-
-        Appending rows with a new schema to an old-format file would corrupt
-        the TSV, so the old file is preserved under a timestamped name.
+        Compatible upgrades (new columns whose names are a superset of the
+        old header, e.g. adding parent_label) are rewritten in place with
+        N/A for missing fields so historical rows stay in the same file.
+        Incompatible headers are rotated to benchmark_log_legacy_<stamp>.tsv.
         """
-        with open(self.log_file) as f:
-            existing_header = f.readline().rstrip("\n").split("\t")
+        with open(self.log_file, newline="") as f:
+            existing_header = f.readline().rstrip("\n").rstrip("\r").split("\t")
+            body = f.read()
         if existing_header == LOG_COLUMNS:
+            return
+        if existing_header and set(existing_header) <= set(LOG_COLUMNS):
+            import io
+            reader = csv.DictReader(
+                io.StringIO("\t".join(existing_header) + "\n" + body),
+                delimiter="\t",
+            )
+            rows = list(reader)
+            with open(self.log_file, "w", newline="") as f:
+                writer = csv.DictWriter(
+                    f, fieldnames=LOG_COLUMNS, delimiter="\t", extrasaction="ignore"
+                )
+                writer.writeheader()
+                for row in rows:
+                    writer.writerow(
+                        {
+                            col: (
+                                row[col]
+                                if col in row and row[col] not in (None, "")
+                                else "N/A"
+                            )
+                            for col in LOG_COLUMNS
+                        }
+                    )
             return
         stamp = datetime.now().strftime("%Y%m%d%H%M%S")
         rotated = os.path.join(self.log_dir, f"benchmark_log_legacy_{stamp}.tsv")
@@ -196,7 +239,7 @@ class BenchmarkTimer:
 
     def _log_metrics(self):
         if os.path.isfile(self.log_file):
-            self._rotate_legacy_log()
+            self._prepare_log_file()
         log_exists = os.path.isfile(self.log_file)
 
         input_file_size = (
@@ -214,6 +257,7 @@ class BenchmarkTimer:
                 _get_git_commit(),
                 self.script_name or "N/A",
                 self.label,
+                self.parent_label or "N/A",
                 self.input_file or "N/A",
                 input_file_size,
                 self.input_rows if self.input_rows is not None else "N/A",

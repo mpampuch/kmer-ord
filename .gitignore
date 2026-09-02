@@ -41,3 +41,5 @@ coverage.xml
 benchmarks/data/
 
 *reads*.tsv
+*reads*.fasta
+*reads*.fastq

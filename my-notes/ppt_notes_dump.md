@@ -131,9 +131,7 @@ Original in program
 Benchmarks on whole dataset suggests this produces the same output matrix and is at least ~50% more RAM efficient (+ faster)
 
 Matrix Preparation
-An idea I have is to also let the user choose the type of PCA used for --pca-pre
---pca-pre-method (pca, ipca)
-(Variance PCA or Incremental PCA)
+`--pca-pre-method {pca, ipca}` is implemented: `pca` is exact sklearn PCA; `ipca` is IncrementalPCA (batched, lower RAM). Optional `--pca-pre-batch-size`. Default remains `pca`.
 
 For many datasets containing large amounts of reads, this stage should be enough to reduce the matrix size down to a manageable size and then the rest of the Dimensionality Reduction techniques should probably be able to work with this
 

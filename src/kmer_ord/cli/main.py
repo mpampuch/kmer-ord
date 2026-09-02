@@ -1,5 +1,6 @@
 # src/kmer_ord/cli/main.py
 import typer
+import click
 from pathlib import Path
 from typing import List, Optional
 import platform
@@ -16,6 +17,16 @@ app = typer.Typer(add_completion=False,
                   context_settings={"help_option_names": ["-h", "--help"]})
 
 app.add_typer(setup_app)
+
+_PCA_PRE_METHODS = click.Choice(["pca", "ipca"])
+_PCA_PRE_METHOD_HELP = (
+    "PCA algorithm for --pca-pre: 'pca' (exact, more RAM) or "
+    "'ipca' (incremental/batched, low RAM)"
+)
+_PCA_PRE_BATCH_SIZE_HELP = (
+    "IncrementalPCA batch size (used only with --pca-pre-method ipca). "
+    "Default: max(2048, 5 * n_components)."
+)
 
 
 #----- header util
@@ -133,7 +144,8 @@ def run_pipeline(
     pca_pre: bool = typer.Option(False, "--pca-pre", help="Apply PCA before DR"),
     keep_pcs: int = typer.Option(None,"--keep-pcs", help="Number of principal components to retain"),
     keep_variance: float = typer.Option(None,"--keep-variance",help="Variance threshold for PCA (e.g. 0.9)"),
-    pca_pre_method: str = typer.Option("pca", "--pca-pre-method", help="PCA algorithm for --pca-pre: 'pca' (exact, more RAM) or 'ipca' (incremental/batched, low RAM)"),
+    pca_pre_method: str = typer.Option("pca", "--pca-pre-method", click_type=_PCA_PRE_METHODS, help=_PCA_PRE_METHOD_HELP),
+    pca_pre_batch_size: Optional[int] = typer.Option(None, "--pca-pre-batch-size", help=_PCA_PRE_BATCH_SIZE_HELP),
     screen_params: bool = typer.Option(False, "--screen_params", help="Run parameter screening for supported DR methods"),
     screen_values1: List[str] = typer.Option([], "--screen_values1", help="Explicit axis-1 (count-like) values per method: 'method=v1,v2,...' or 'all=v1,v2,...'. Repeatable."),
     screen_values2: List[str] = typer.Option([], "--screen_values2", help="Explicit axis-2 values per method: 'method=v1,v2,...'. Repeatable."),
@@ -170,7 +182,7 @@ def run_pipeline(
         FastqToFasta, FastaStats, KmerCount, KmerMetrics, Tiara, RDNAMiner, MatrixPreprocessing,
         DimensionalityReduction, FeatureMerge, SpatialiteDatabase)
 
-    context = Context(input, output_dir, force=force, threads=threads)
+    context = Context(input, output_dir, force=force, threads=threads, script_name="project")
 
     method_list = [m.strip().lower() for m in dr_methods.split(",")]
     norm_list = [n.strip().lower() for n in normalisation.split(",")]
@@ -201,6 +213,7 @@ def run_pipeline(
             keep_pcs=keep_pcs,
             keep_variance=keep_variance,
             pca_method=pca_pre_method,
+            pca_batch_size=pca_pre_batch_size,
             scale=scale),
         DimensionalityReduction(
             methods=method_list,
@@ -235,7 +248,8 @@ def discover_pipeline(
     pca_pre: bool = typer.Option(False, "--pca-pre", help="Apply PCA before DR"),
     keep_pcs: int = typer.Option(None,"--keep-pcs", help="Number of principal components to retain"),
     keep_variance: float = typer.Option(None,"--keep-variance",help="Variance threshold for PCA (e.g. 0.9)"),
-    pca_pre_method: str = typer.Option("pca", "--pca-pre-method", help="PCA algorithm for --pca-pre: 'pca' (exact, more RAM) or 'ipca' (incremental/batched, low RAM)"),
+    pca_pre_method: str = typer.Option("pca", "--pca-pre-method", click_type=_PCA_PRE_METHODS, help=_PCA_PRE_METHOD_HELP),
+    pca_pre_batch_size: Optional[int] = typer.Option(None, "--pca-pre-batch-size", help=_PCA_PRE_BATCH_SIZE_HELP),
     screen_params: bool = typer.Option(False, "--screen_params", help="Run parameter screening for supported DR methods"),
     screen_values1: List[str] = typer.Option([], "--screen_values1", help="Explicit axis-1 (count-like) values per method: 'method=v1,v2,...' or 'all=v1,v2,...'. Repeatable."),
     screen_values2: List[str] = typer.Option([], "--screen_values2", help="Explicit axis-2 values per method: 'method=v1,v2,...'. Repeatable."),
@@ -279,7 +293,7 @@ def discover_pipeline(
         Clustering,
         AddClusteringToDB)
 
-    context = Context(input, output_dir, force=force, threads=threads)
+    context = Context(input, output_dir, force=force, threads=threads, script_name="cluster")
 
     cluster_list = [c.strip().lower() for c in cluster_methods.split(",")]
     norm_list = [n.strip().lower() for n in normalisation.split(",")]
@@ -299,6 +313,7 @@ def discover_pipeline(
             keep_pcs=keep_pcs,
             keep_variance=keep_variance,
             pca_method=pca_pre_method,
+            pca_batch_size=pca_pre_batch_size,
             scale=scale),
         DimensionalityReduction(
             methods=method_list,
@@ -625,7 +640,8 @@ def dr_cmd(
     pca_pre: bool = typer.Option(False, "--pca-pre", help="Apply PCA before DR"),
     keep_pcs: int = typer.Option(None, "--keep-pcs"),
     keep_variance: float = typer.Option(None, "--keep-variance"),
-    pca_pre_method: str = typer.Option("pca", "--pca-pre-method", help="PCA algorithm for --pca-pre: 'pca' (exact, more RAM) or 'ipca' (incremental/batched, low RAM)"),
+    pca_pre_method: str = typer.Option("pca", "--pca-pre-method", click_type=_PCA_PRE_METHODS, help=_PCA_PRE_METHOD_HELP),
+    pca_pre_batch_size: Optional[int] = typer.Option(None, "--pca-pre-batch-size", help=_PCA_PRE_BATCH_SIZE_HELP),
     screen_params: bool = typer.Option(False, "--screen_params", help="Run parameter screening for supported DR methods"),
     screen_values1: List[str] = typer.Option([], "--screen_values1", help="Explicit axis-1 (count-like) values per method: 'method=v1,v2,...' or 'all=v1,v2,...'. Repeatable."),
     screen_values2: List[str] = typer.Option([], "--screen_values2", help="Explicit axis-2 values per method: 'method=v1,v2,...'. Repeatable."),
@@ -643,7 +659,7 @@ def dr_cmd(
     from kmer_ord.workflow.context import MatrixContext
     from kmer_ord.workflow.operations import MatrixPreprocessing, DimensionalityReduction
 
-    context = MatrixContext(input, output_dir, force=force)
+    context = MatrixContext(input, output_dir, force=force, script_name="dr")
 
     method_list = [m.strip().lower() for m in methods.split(",")]
     norm_list = [n.strip().lower() for n in normalisation.split(",")]
@@ -655,6 +671,7 @@ def dr_cmd(
             keep_pcs=keep_pcs,
             keep_variance=keep_variance,
             pca_method=pca_pre_method,
+            pca_batch_size=pca_pre_batch_size,
             scale=scale,
         ),
         DimensionalityReduction(

@@ -11,7 +11,6 @@ from kmer_ord.io.kmer_counter import run_kmer_counter
 from kmer_ord.io.run_tiara import run_tiara
 from kmer_ord.io.run_rdna import run_rdna_miner
 from .operation import Operation
-from kmer_ord.utils.benchmark import BenchmarkTimer
 
 from kmer_ord.system.env_manager import TOOLS_ENV, run_in_env
 
@@ -20,7 +19,7 @@ class FastqToFasta(Operation):
     produces = ["fasta"]
 
     def run(self, context):
-        with BenchmarkTimer(label=self.name, input_file=context.input_file):
+        with context.benchmark_timer(label=self.name, input_file=context.input_file):
             # No need to convert again — context has already created canonical FASTA.
             # Just register it explicitly.
             fasta = context.fasta
@@ -36,7 +35,7 @@ class FastaStats(Operation):
         overall_path = context.artifact_path("overall_stats", subdir="summary", suffix=".txt")
         per_seq_path = context.artifact_path("stats_per_sequence", subdir="summary", suffix=".tsv")
 
-        with BenchmarkTimer(label=self.name, input_file=context.fasta):
+        with context.benchmark_timer(label=self.name, input_file=context.fasta):
             if overall_path.exists() and per_seq_path.exists() and not context.force:
                 context.logger.info("Skipping FastaStats, summary output files already exist.")
                 typer.echo("Skipping FastaStats, summary output files already exist.")
@@ -61,7 +60,7 @@ class KmerCount(Operation):
         output_path = context.artifact_path(f"{self.kmer_length}mer_matrix",
                                             subdir="kmer", suffix=".tsv")
 
-        with BenchmarkTimer(label=f"{self.name}_{self.kmer_length}mer",
+        with context.benchmark_timer(label=f"{self.name}_{self.kmer_length}mer",
                             input_file=context.get("fasta"),
                             input_args=f"kmer_length={self.kmer_length}, threads={self.threads}"):
             if output_path.exists() and not context.force:
@@ -72,7 +71,9 @@ class KmerCount(Operation):
                     input_file=context.get("fasta"),
                     output_tsv=output_path,
                     kmer_length=self.kmer_length,
-                    num_threads=self.threads)
+                    num_threads=self.threads,
+                    log_dir=str(context.benchmark_dir),
+                    script_name=context.script_name)
 
         context.register("kmer_matrix", output_path)
 
@@ -96,6 +97,7 @@ class MatrixPreprocessing(Operation):
         keep_pcs=None,
         keep_variance=None,
         pca_method="pca",
+        pca_batch_size=None,
         scale="auto",
         max_memory_gb=None,
     ):
@@ -104,19 +106,21 @@ class MatrixPreprocessing(Operation):
         self.keep_pcs = keep_pcs
         self.keep_variance = keep_variance
         self.pca_method = pca_method
+        self.pca_batch_size = pca_batch_size
         self.scale = scale
         self.max_memory_gb = max_memory_gb
 
     def run(self, context):
         matrix_path = context.get("kmer_matrix")
 
-        with BenchmarkTimer(
+        with context.benchmark_timer(
             label=self.name,
             input_file=matrix_path,
             input_args=(
                 f"normalisations={','.join(self.normalisations)}, "
                 f"pca_dim_red={self.pca_dim_red}, keep_pcs={self.keep_pcs}, "
-                f"keep_variance={self.keep_variance}, pca_method={self.pca_method}"
+                f"keep_variance={self.keep_variance}, pca_method={self.pca_method}, "
+                f"pca_batch_size={self.pca_batch_size}"
             ),
         ) as bt:
             self._run(context, matrix_path, bt)
@@ -152,17 +156,29 @@ class MatrixPreprocessing(Operation):
             if out_path.exists() and not context.force:
                 outputs.append(out_path)
             else:
-                # preprocess (drop sequence_id for numeric operations)
-                # X = preprocess_data(matrix.drop(columns="sequence_id"), norm)
-                X = preprocess_data(matrix, norm)
+                with context.benchmark_timer(
+                    label=f"preprocess_{norm}",
+                    input_file=matrix_path,
+                ):
+                    X = preprocess_data(matrix, norm)
 
                 if self.pca_dim_red:
-                    X = reduce_dimensions_with_pca(
-                        X,
-                        keep_pcs=self.keep_pcs,
-                        keep_variance=self.keep_variance,
-                        method=self.pca_method,
-                    )
+                    with context.benchmark_timer(
+                        label=f"pca_pre_{norm}",
+                        input_file=matrix_path,
+                        input_args=(
+                            f"method={self.pca_method}, keep_pcs={self.keep_pcs}, "
+                            f"keep_variance={self.keep_variance}, "
+                            f"batch_size={self.pca_batch_size}"
+                        ),
+                    ):
+                        X = reduce_dimensions_with_pca(
+                            X,
+                            keep_pcs=self.keep_pcs,
+                            keep_variance=self.keep_variance,
+                            method=self.pca_method,
+                            batch_size=self.pca_batch_size,
+                        )
 
                 np.save(out_path, X)
                 outputs.append(out_path)
@@ -253,7 +269,7 @@ class DimensionalityReduction(Operation):
 
                 continue
 
-            with BenchmarkTimer(
+            with context.benchmark_timer(
                 label=f"{self.name}_{norm_label}",
                 input_file=matrix_path,
                 input_args=(
@@ -262,11 +278,14 @@ class DimensionalityReduction(Operation):
                     f"threads={self.threads}"
                 ),
             ) as bt:
-                X = np.load(matrix_path)
+                with context.benchmark_timer(
+                    label=f"dr_load_{norm_label}",
+                    input_file=matrix_path,
+                ) as load_bt:
+                    X = np.load(matrix_path)
+                    load_bt.record_input_shape(*X.shape)
+                    sequence_ids = np.load(seqid_paths[i])
                 bt.record_input_shape(*X.shape)
-
-                # Load corresponding sequence IDs
-                sequence_ids = np.load(seqid_paths[i])
 
                 # Memory check: per-method estimates including neighbor
                 # graphs / pair tables (the old X.nbytes*4 heuristic ignored
@@ -313,6 +332,8 @@ class DimensionalityReduction(Operation):
                     input_name=input_name,
                     sequence_ids=sequence_ids,
                     n_jobs=self.threads,
+                    log_dir=str(context.benchmark_dir),
+                    script_name=context.script_name,
                 )
 
             merged_outputs.append(merged_file)
@@ -343,7 +364,7 @@ class KmerMetrics(Operation):
         output_file = context.artifact_path(name="kmer_metrics", subdir="kmer", suffix=".tsv")
         output_file.parent.mkdir(parents=True, exist_ok=True)
 
-        with BenchmarkTimer(label=self.name, input_file=matrix_path):
+        with context.benchmark_timer(label=self.name, input_file=matrix_path):
             if output_file.exists() and not context.force:
                 typer.echo(f"Skipping KmerMetrics, output exists: {output_file}")
                 context.logger.info(f"Skipping KmerMetrics, output exists: {output_file}")
@@ -375,7 +396,7 @@ class Tiara(Operation):
                                             suffix=".tsv")
         output_file.parent.mkdir(parents=True, exist_ok=True)
 
-        with BenchmarkTimer(
+        with context.benchmark_timer(
             label=self.name,
             input_file=input_fasta,
             input_args=f"threads={self.threads}"):
@@ -408,7 +429,7 @@ class RDNAMiner(Operation):
                                              suffix=".tsv")
         feature_file.parent.mkdir(parents=True, exist_ok=True)
 
-        with BenchmarkTimer(
+        with context.benchmark_timer(
             label=self.name,
             input_file=input_fasta,
             input_args=f"threads={self.threads} platform={self.platform}"):
@@ -434,48 +455,49 @@ class FeatureMerge(Operation):
     def run(self, context):
         import pandas as pd
 
-        def normalize_id_column(df):
-            possible_id_cols = ["sequence_id", "header", "seq_id", "contig", "id"]
-            for col in possible_id_cols:
-                if col in df.columns:
-                    if col != "sequence_id":
-                        df = df.rename(columns={col: "sequence_id"})
-                    return df
-            raise ValueError(f"No valid sequence ID column found in {df.columns.tolist()}")
+        with context.benchmark_timer(label=self.name):
+            def normalize_id_column(df):
+                possible_id_cols = ["sequence_id", "header", "seq_id", "contig", "id"]
+                for col in possible_id_cols:
+                    if col in df.columns:
+                        if col != "sequence_id":
+                            df = df.rename(columns={col: "sequence_id"})
+                        return df
+                raise ValueError(f"No valid sequence ID column found in {df.columns.tolist()}")
 
-        # Required artifacts
-        kmer_df = normalize_id_column(pd.read_csv(context.get("kmer_metrics"), sep="\t"))
-        summary_df = normalize_id_column(pd.read_csv(context.get("summary_per_sequence"), sep="\t"))
-        merged = kmer_df.merge(summary_df, on="sequence_id", how="left")
+            # Required artifacts
+            kmer_df = normalize_id_column(pd.read_csv(context.get("kmer_metrics"), sep="\t"))
+            summary_df = normalize_id_column(pd.read_csv(context.get("summary_per_sequence"), sep="\t"))
+            merged = kmer_df.merge(summary_df, on="sequence_id", how="left")
 
-        #merge tiara based on sequence_id, if exists
-        try:
-            tiara_path = context.get("tiara")
-        except ValueError:
-            tiara_path = None
+            #merge tiara based on sequence_id, if exists
+            try:
+                tiara_path = context.get("tiara")
+            except ValueError:
+                tiara_path = None
 
-        if tiara_path:
-            tiara_df = normalize_id_column(pd.read_csv(tiara_path, sep="\t"))
-            merged = merged.merge(tiara_df, on="sequence_id", how="left")
+            if tiara_path:
+                tiara_df = normalize_id_column(pd.read_csv(tiara_path, sep="\t"))
+                merged = merged.merge(tiara_df, on="sequence_id", how="left")
 
-        #merge rdna-miner taxonomy based on sequence_id, if exists
-        try:
-            rdna_path = context.get("rdna")
-        except ValueError:
-            rdna_path = None
+            #merge rdna-miner taxonomy based on sequence_id, if exists
+            try:
+                rdna_path = context.get("rdna")
+            except ValueError:
+                rdna_path = None
 
-        if rdna_path:
-            rdna_df = normalize_id_column(pd.read_csv(rdna_path, sep="\t"))
-            merged = merged.merge(rdna_df, on="sequence_id", how="left")
+            if rdna_path:
+                rdna_df = normalize_id_column(pd.read_csv(rdna_path, sep="\t"))
+                merged = merged.merge(rdna_df, on="sequence_id", how="left")
 
-        if merged["sequence_id"].duplicated().any():
-            raise RuntimeError("Duplicate sequence_id detected after merge.")
+            if merged["sequence_id"].duplicated().any():
+                raise RuntimeError("Duplicate sequence_id detected after merge.")
 
-        output_path = context.output_dir / "features" / "merged_features.tsv"
-        output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path = context.output_dir / "features" / "merged_features.tsv"
+            output_path.parent.mkdir(parents=True, exist_ok=True)
 
-        merged.to_csv(output_path, sep="\t", index=False)
-        context.register("merged_features", output_path)
+            merged.to_csv(output_path, sep="\t", index=False)
+            context.register("merged_features", output_path)
 
  
 class SpatialiteDatabase(Operation):
@@ -496,62 +518,61 @@ class SpatialiteDatabase(Operation):
                                   create_coordinates_table,
                                   populate_coordinates_table,
                                   inspect_database)
-        #from kmer_ord.io import database
         output_path = context.output_dir / self.db_name
 
         if output_path.exists() and not context.force:
             context.register("database", output_path)
             return
 
-        if output_path.exists():
-            output_path.unlink()
+        with context.benchmark_timer(label=self.name, input_file=output_path):
+            if output_path.exists():
+                output_path.unlink()
 
-        conn = initialize_spatialite_db(output_path)
+            conn = initialize_spatialite_db(output_path)
 
-        # FASTA TABLE
-        fasta_file = context.get("fasta")
-        create_fasta_table(conn)
-        populate_fasta_table(conn, fasta_file)
+            with context.benchmark_timer("db_fasta"):
+                fasta_file = context.get("fasta")
+                create_fasta_table(conn)
+                populate_fasta_table(conn, fasta_file)
 
-        # FEATURES TABLE
-        features_path = context.get("merged_features")
-        features_df = pd.read_csv(features_path, sep="\t")
+            with context.benchmark_timer("db_features"):
+                features_path = context.get("merged_features")
+                features_df = pd.read_csv(features_path, sep="\t")
 
-        if "sequence_id" not in features_df.columns:
-            raise RuntimeError("merged_features.tsv must contain a 'sequence_id' column.")
+                if "sequence_id" not in features_df.columns:
+                    raise RuntimeError("merged_features.tsv must contain a 'sequence_id' column.")
 
-        if features_df["sequence_id"].duplicated().any():
-            raise RuntimeError("Duplicate sequence_id detected in merged_features.")
+                if features_df["sequence_id"].duplicated().any():
+                    raise RuntimeError("Duplicate sequence_id detected in merged_features.")
 
-        create_features_table(conn, features_df)
-        populate_features_table(conn, features_df)
+                create_features_table(conn, features_df)
+                populate_features_table(conn, features_df)
 
-        # COORDINATES TABLE
-        embedding_files = context.get("dr_embeddings")
-        if not isinstance(embedding_files, list):
-            embedding_files = [embedding_files]
+            with context.benchmark_timer("db_coordinates"):
+                embedding_files = context.get("dr_embeddings")
+                if not isinstance(embedding_files, list):
+                    embedding_files = [embedding_files]
 
-        coords_df = None
-        for emb_file in embedding_files:
-            df_emb = pd.read_csv(emb_file, sep="\t")
-            if "sequence_id" not in df_emb.columns:
-                df_emb["sequence_id"] = features_df["sequence_id"].values
+                coords_df = None
+                for emb_file in embedding_files:
+                    df_emb = pd.read_csv(emb_file, sep="\t")
+                    if "sequence_id" not in df_emb.columns:
+                        df_emb["sequence_id"] = features_df["sequence_id"].values
 
-            if coords_df is None:
-                coords_df = df_emb
-            else:
-                new_cols = [c for c in df_emb.columns if c != "sequence_id" and c not in coords_df.columns]
-                coords_df = coords_df.merge(df_emb[["sequence_id"] + new_cols], on="sequence_id", how="inner")
+                    if coords_df is None:
+                        coords_df = df_emb
+                    else:
+                        new_cols = [c for c in df_emb.columns if c != "sequence_id" and c not in coords_df.columns]
+                        coords_df = coords_df.merge(df_emb[["sequence_id"] + new_cols], on="sequence_id", how="inner")
 
-        cols = ["sequence_id"] + [c for c in coords_df.columns if c != "sequence_id"]
-        coords_df = coords_df[cols]
+                cols = ["sequence_id"] + [c for c in coords_df.columns if c != "sequence_id"]
+                coords_df = coords_df[cols]
 
-        methods = create_coordinates_table(conn, coords_df)
-        populate_coordinates_table(conn, coords_df, methods)
+                methods = create_coordinates_table(conn, coords_df)
+                populate_coordinates_table(conn, coords_df, methods)
 
-        conn.close()
-        context.register("database", output_path)
-        #inspect_database(output_path)
+            conn.close()
+            context.register("database", output_path)
 
 
 class Clustering(Operation):
@@ -606,85 +627,93 @@ class Clustering(Operation):
 
         cluster_outputs = []
 
-        for emb_path in embedding_files:
+        with context.benchmark_timer(
+            label=self.name,
+            input_args=f"method={self.method}, sweep={self.sweep}",
+        ):
+            for emb_path in embedding_files:
 
-            emb_path = Path(emb_path)
-            embedding_name = emb_path.stem
+                emb_path = Path(emb_path)
+                embedding_name = emb_path.stem
 
-            output_file = context.artifact_path(
-                name=f"{embedding_name}_{self.method}_clusters",
-                subdir="clusters",
-                suffix=".tsv"
-            )
+                output_file = context.artifact_path(
+                    name=f"{embedding_name}_{self.method}_clusters",
+                    subdir="clusters",
+                    suffix=".tsv"
+                )
 
-            if output_file.exists() and not context.force:
-                context.logger.info(f"Skipping clustering, exists: {output_file}")
+                if output_file.exists() and not context.force:
+                    context.logger.info(f"Skipping clustering, exists: {output_file}")
+                    cluster_outputs.append(output_file)
+                    continue
+
+                df = pd.read_csv(emb_path, sep="\t")
+                sequence_ids = df["sequence_id"]
+
+                # Detect each DR method and its dimensionality from column names.
+                # Columns follow the pattern {method}_{dim} e.g. umap_1, umap_2, tsne_1.
+                dr_methods = {}
+                for col in df.columns:
+                    if col != "sequence_id" and col.endswith("_1"):
+                        base = col[:-2]
+                        n = 1
+                        while f"{base}_{n + 1}" in df.columns:
+                            n += 1
+                        dr_methods[base] = n
+
+                cluster_df = pd.DataFrame({"sequence_id": sequence_ids})
+
+                for dr_method, n_dims in dr_methods.items():
+                    prefix = f"{dr_method}_{n_dims}"
+                    X = df[[f"{dr_method}_{i + 1}" for i in range(n_dims)]].values
+
+                    with context.benchmark_timer(
+                        label=f"cluster_{self.method}_{dr_method}",
+                        input_file=emb_path,
+                    ):
+                        # LEIDEN
+                        if self.method == "leiden":
+                            A = build_knn_graph(X, k=self.knn)
+                            if self.sweep:
+                                results = leiden_resolution_sweep(
+                                    A,
+                                    resolutions=self.LEIDEN_RESOLUTIONS,
+                                    seed=self.seed
+                                )
+                                for r, (labels, modularity) in results.items():
+                                    cluster_df[f"{prefix}_leiden_r{r:.4f}"] = labels
+                            else:
+                                labels, modularity = run_leiden(A, resolution=1.0, seed=self.seed)
+                                cluster_df[f"{prefix}_leiden"] = labels
+
+                        # HDBSCAN
+                        elif self.method == "hdbscan":
+                            if self.sweep:
+                                for mcs in self.HDBSCAN_MCS:
+                                    labels = run_hdbscan(X, min_cluster_size=mcs, min_samples=self.min_samples)
+                                    cluster_df[f"{prefix}_hdbscan_mcs{mcs}"] = labels
+                            else:
+                                labels = run_hdbscan(
+                                    X, min_cluster_size=self.min_cluster_size, min_samples=self.min_samples
+                                )
+                                cluster_df[f"{prefix}_hdbscan"] = labels
+
+                        # DBSCAN
+                        elif self.method == "dbscan":
+                            if self.sweep:
+                                for eps in self.DBSCAN_EPS:
+                                    labels = run_dbscan(X, eps=eps, min_samples=self.min_samples)
+                                    cluster_df[f"{prefix}_dbscan_eps{eps:.3f}"] = labels
+                            else:
+                                labels = run_dbscan(X, eps=self.eps, min_samples=self.min_samples)
+                                cluster_df[f"{prefix}_dbscan"] = labels
+
+                        else:
+                            raise ValueError(f"Unknown clustering method: {self.method}")
+
+                output_file.parent.mkdir(parents=True, exist_ok=True)
+                cluster_df.to_csv(output_file, sep="\t", index=False)
                 cluster_outputs.append(output_file)
-                continue
-
-            df = pd.read_csv(emb_path, sep="\t")
-            sequence_ids = df["sequence_id"]
-
-            # Detect each DR method and its dimensionality from column names.
-            # Columns follow the pattern {method}_{dim} e.g. umap_1, umap_2, tsne_1.
-            dr_methods = {}
-            for col in df.columns:
-                if col != "sequence_id" and col.endswith("_1"):
-                    base = col[:-2]
-                    n = 1
-                    while f"{base}_{n + 1}" in df.columns:
-                        n += 1
-                    dr_methods[base] = n
-
-            cluster_df = pd.DataFrame({"sequence_id": sequence_ids})
-
-            for dr_method, n_dims in dr_methods.items():
-                prefix = f"{dr_method}_{n_dims}"
-                X = df[[f"{dr_method}_{i + 1}" for i in range(n_dims)]].values
-
-                # LEIDEN
-                if self.method == "leiden":
-                    A = build_knn_graph(X, k=self.knn)
-                    if self.sweep:
-                        results = leiden_resolution_sweep(
-                            A,
-                            resolutions=self.LEIDEN_RESOLUTIONS,
-                            seed=self.seed
-                        )
-                        for r, (labels, modularity) in results.items():
-                            cluster_df[f"{prefix}_leiden_r{r:.4f}"] = labels
-                    else:
-                        labels, modularity = run_leiden(A, resolution=1.0, seed=self.seed)
-                        cluster_df[f"{prefix}_leiden"] = labels
-
-                # HDBSCAN
-                elif self.method == "hdbscan":
-                    if self.sweep:
-                        for mcs in self.HDBSCAN_MCS:
-                            labels = run_hdbscan(X, min_cluster_size=mcs, min_samples=self.min_samples)
-                            cluster_df[f"{prefix}_hdbscan_mcs{mcs}"] = labels
-                    else:
-                        labels = run_hdbscan(
-                            X, min_cluster_size=self.min_cluster_size, min_samples=self.min_samples
-                        )
-                        cluster_df[f"{prefix}_hdbscan"] = labels
-
-                # DBSCAN
-                elif self.method == "dbscan":
-                    if self.sweep:
-                        for eps in self.DBSCAN_EPS:
-                            labels = run_dbscan(X, eps=eps, min_samples=self.min_samples)
-                            cluster_df[f"{prefix}_dbscan_eps{eps:.3f}"] = labels
-                    else:
-                        labels = run_dbscan(X, eps=self.eps, min_samples=self.min_samples)
-                        cluster_df[f"{prefix}_dbscan"] = labels
-
-                else:
-                    raise ValueError(f"Unknown clustering method: {self.method}")
-
-            output_file.parent.mkdir(parents=True, exist_ok=True)
-            cluster_df.to_csv(output_file, sep="\t", index=False)
-            cluster_outputs.append(output_file)
 
         # SAFE artifact registration (fixes your NameError issue)
         existing = context.artifacts.get("clusters", [])
@@ -714,12 +743,13 @@ class AddClusteringToDB(Operation):
         if not isinstance(cluster_files, list):
             cluster_files = [cluster_files]
 
-        add_dr_and_clusters_to_db(
-            db_path=self.db_path,
-            embedding_files=embedding_files,
-            cluster_files=cluster_files,
-            force=self.force
-        )
+        with context.benchmark_timer(label=self.name, input_file=self.db_path):
+            add_dr_and_clusters_to_db(
+                db_path=self.db_path,
+                embedding_files=embedding_files,
+                cluster_files=cluster_files,
+                force=self.force
+            )
 
         context.register("database", self.db_path)
         inspect_database(self.db_path)

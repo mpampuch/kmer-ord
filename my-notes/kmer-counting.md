@@ -381,9 +381,13 @@ You can additionally request PCA pre-reduction before DR using:
 --pca-pre
 --keep-pcs
 --keep-variance
+--pca-pre-method {pca,ipca}
+--pca-pre-batch-size N
 ```
 
 `MatrixPreprocessing` supports these options before the final DR step.
+
+Every `project` / `cluster` / `dr` run also writes `{output}/benchmarking/benchmark_log.tsv`: one parent row per pipeline stage (wall time + peak RSS) plus leaf rows for inner steps (k-mer-counter substeps, each normalisation / PCA-pre, each DR method). Nested rows have `parent_label` set to the outer stage.
 
 ---
 
@@ -410,6 +414,10 @@ speeds up downstream DR (t-SNE / UMAP / PaCMAP) and clustering,
 can denoise data and remove extremely high-dimensional sparsity before nonlinear DR.
 You must specify how many PCs to keep:
 Use --pca-pre plus either --keep-pcs N or --keep-variance 0.90 (or both). If you pass --pca-pre without either, the code will raise an error.
+
+`--pca-pre-method pca` (default) is exact sklearn PCA and uses more RAM. `--pca-pre-method ipca` uses IncrementalPCA: it approximates the same subspace in row batches and is the right choice when the matrix is RAM-limited. Results match exact PCA when the data fits in a single batch. `--pca-pre-batch-size` is optional and only used with `ipca` (default `max(2048, 5 * n_components)`).
+
 Example: kmer-ord project ... --pca-pre --keep-pcs 50
 Or: kmer-ord project ... --pca-pre --keep-variance 0.95
+Large-matrix / low-RAM recipe: kmer-ord project ... --pca-pre --keep-pcs 50 --pca-pre-method ipca
 PCA is applied after the chosen normalisation (raw/relative/log/clr/zscore). So the PCA scores are of the normalised data.
