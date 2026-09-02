@@ -133,6 +133,7 @@ def run_pipeline(
     pca_pre: bool = typer.Option(False, "--pca-pre", help="Apply PCA before DR"),
     keep_pcs: int = typer.Option(None,"--keep-pcs", help="Number of principal components to retain"),
     keep_variance: float = typer.Option(None,"--keep-variance",help="Variance threshold for PCA (e.g. 0.9)"),
+    pca_pre_method: str = typer.Option("pca", "--pca-pre-method", help="PCA algorithm for --pca-pre: 'pca' (exact, more RAM) or 'ipca' (incremental/batched, low RAM)"),
     screen_params: bool = typer.Option(False, "--screen_params", help="Run parameter screening for supported DR methods"),
     screen_values1: List[str] = typer.Option([], "--screen_values1", help="Explicit axis-1 (count-like) values per method: 'method=v1,v2,...' or 'all=v1,v2,...'. Repeatable."),
     screen_values2: List[str] = typer.Option([], "--screen_values2", help="Explicit axis-2 values per method: 'method=v1,v2,...'. Repeatable."),
@@ -199,6 +200,7 @@ def run_pipeline(
             pca_dim_red=pca_pre,
             keep_pcs=keep_pcs,
             keep_variance=keep_variance,
+            pca_method=pca_pre_method,
             scale=scale),
         DimensionalityReduction(
             methods=method_list,
@@ -233,6 +235,7 @@ def discover_pipeline(
     pca_pre: bool = typer.Option(False, "--pca-pre", help="Apply PCA before DR"),
     keep_pcs: int = typer.Option(None,"--keep-pcs", help="Number of principal components to retain"),
     keep_variance: float = typer.Option(None,"--keep-variance",help="Variance threshold for PCA (e.g. 0.9)"),
+    pca_pre_method: str = typer.Option("pca", "--pca-pre-method", help="PCA algorithm for --pca-pre: 'pca' (exact, more RAM) or 'ipca' (incremental/batched, low RAM)"),
     screen_params: bool = typer.Option(False, "--screen_params", help="Run parameter screening for supported DR methods"),
     screen_values1: List[str] = typer.Option([], "--screen_values1", help="Explicit axis-1 (count-like) values per method: 'method=v1,v2,...' or 'all=v1,v2,...'. Repeatable."),
     screen_values2: List[str] = typer.Option([], "--screen_values2", help="Explicit axis-2 values per method: 'method=v1,v2,...'. Repeatable."),
@@ -295,6 +298,7 @@ def discover_pipeline(
             pca_dim_red=pca_pre,
             keep_pcs=keep_pcs,
             keep_variance=keep_variance,
+            pca_method=pca_pre_method,
             scale=scale),
         DimensionalityReduction(
             methods=method_list,
@@ -621,6 +625,7 @@ def dr_cmd(
     pca_pre: bool = typer.Option(False, "--pca-pre", help="Apply PCA before DR"),
     keep_pcs: int = typer.Option(None, "--keep-pcs"),
     keep_variance: float = typer.Option(None, "--keep-variance"),
+    pca_pre_method: str = typer.Option("pca", "--pca-pre-method", help="PCA algorithm for --pca-pre: 'pca' (exact, more RAM) or 'ipca' (incremental/batched, low RAM)"),
     screen_params: bool = typer.Option(False, "--screen_params", help="Run parameter screening for supported DR methods"),
     screen_values1: List[str] = typer.Option([], "--screen_values1", help="Explicit axis-1 (count-like) values per method: 'method=v1,v2,...' or 'all=v1,v2,...'. Repeatable."),
     screen_values2: List[str] = typer.Option([], "--screen_values2", help="Explicit axis-2 values per method: 'method=v1,v2,...'. Repeatable."),
@@ -649,6 +654,7 @@ def dr_cmd(
             pca_dim_red=pca_pre,
             keep_pcs=keep_pcs,
             keep_variance=keep_variance,
+            pca_method=pca_pre_method,
             scale=scale,
         ),
         DimensionalityReduction(

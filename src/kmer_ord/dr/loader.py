@@ -6,7 +6,12 @@ def load_matrix(matrix_path: Path) -> pd.DataFrame:
     """
     Load k-mer matrix from TSV, CSV, or NPY file.
     First column is sample IDs; rest are numeric features.
-    Returns pd.DataFrame with sample IDs as index.
+    Returns pd.DataFrame of float32 with sample IDs as index.
+
+    Numeric columns are parsed directly into float32 so the matrix exists in
+    RAM exactly once at its final dtype — the previous flow loaded as
+    int64/float64 and made a second float32 copy inside preprocess_data,
+    doubling peak memory for the largest object in the pipeline.
     """
     import numpy as np
     matrix_path = Path(matrix_path)
@@ -17,18 +22,24 @@ def load_matrix(matrix_path: Path) -> pd.DataFrame:
     suffix = matrix_path.suffix.lower()
 
     if suffix in [".tsv", ".csv"]:
-        df = pd.read_csv(matrix_path, sep="\t" if suffix == ".tsv" else ",", index_col=0)
-        #df = pd.read_csv(matrix_path, sep="\t" if suffix == ".tsv" else ",", index_col=None)
+        sep = "\t" if suffix == ".tsv" else ","
+        with open(matrix_path) as f:
+            num_columns = len(f.readline().rstrip("\n").split(sep))
+
+        # positional dtypes: string index, float32 everywhere else; a
+        # non-numeric feature value fails here at parse time (ValueError)
+        dtypes: dict[int, type] = {0: str}
+        for col in range(1, num_columns):
+            dtypes[col] = np.float32
+
+        df = pd.read_csv(matrix_path, sep=sep, index_col=0, dtype=dtypes)
     elif suffix == ".npy":
         arr = np.load(matrix_path)
-        df = pd.DataFrame(arr)
+        df = pd.DataFrame(arr.astype(np.float32, copy=False))
     else:
         raise ValueError(f"Unsupported matrix format: {suffix}")
 
     if df.shape[0] < 2:
         raise ValueError("Matrix must contain at least 2 samples for DR.")
-
-    # ensure all remaining columns are numeric
-    df = df.apply(pd.to_numeric, errors="raise")
 
     return df

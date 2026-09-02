@@ -354,7 +354,7 @@ X -= row_means
 
 This works because:
 
-$$CLR(x_i) = \log(x_i) - \frac{1}{D}\sum_j \log(x_{ij})$$
+![clr-picture](/Users/markpampuch/Dropbox/KAUST/PhD/20260823_kmer-ord-local/kmer-ord/my-notes/clr.png)
 
 So you don't need to calculate:
 
