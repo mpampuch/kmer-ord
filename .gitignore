@@ -35,3 +35,9 @@ coverage.xml
 # Misc
 *.out
 *.tmp
+
+# Generated benchmark datasets (the benchmark_log.tsv itself stays tracked
+# so peak-RAM results can be compared across commits)
+benchmarks/data/
+
+*reads*.tsv

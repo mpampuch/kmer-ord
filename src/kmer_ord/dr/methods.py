@@ -65,6 +65,54 @@ DR_HYPERPARAMS = {
 ALL_METHODS = ["umap", "tsne", "trimap", "pacmap", "localmap", "pca"]
 
 
+def estimate_peak_memory_gb(n_seq: int, n_feat: int, method: str, scale: str) -> float:
+    """Rough upper bound on peak RAM (GB) for one DR fit on an n_seq x n_feat
+    float32 matrix at the given (resolved) scale preset.
+
+    Unlike the old `X.nbytes * 4` heuristic, this accounts for the structures
+    that actually dominate at scale (per the memory audit): sparse neighbor
+    graphs (UMAP), the sparse P-matrix over ~3*perplexity neighbors (t-SNE),
+    near/mid/far pair tables (PaCMAP/LocalMAP), triplet index arrays (TriMAP),
+    and sklearn's float64 working copy (PCA/t-SNE). Byte-per-entry constants
+    are deliberately generous — this is a guard, not a profiler.
+    """
+    method = method.lower()
+    params = DR_HYPERPARAMS.get(method, {}).get(scale, {})
+    x_bytes = n_seq * n_feat * 4  # the float32 matrix held for the whole stage
+
+    if method == "pca":
+        # sklearn PCA copies float32 input to a float64 workspace
+        extra = n_seq * n_feat * 8
+    elif method == "tsne":
+        # float64 copy + sparse P-matrix over ~3*perplexity neighbors/point
+        # (~16 bytes per stored entry: value + index + sparse overhead)
+        perplexity = params.get("perplexity", 30)
+        extra = n_seq * n_feat * 8 + n_seq * 3 * perplexity * 16
+    elif method == "umap":
+        # symmetrised fuzzy graph is O(n x k); factor 2 covers NN-descent
+        # scratch structures alongside the final graph
+        n_neighbors = params.get("n_neighbors", 15)
+        extra = n_seq * n_neighbors * 16 * 2
+    elif method in ("pacmap", "localmap"):
+        # pairs ~= n x k x (1 + MN_ratio + FP_ratio); ~12 bytes per pair
+        # (two int32 endpoints + optimizer state)
+        n_neighbors = params.get("n_neighbors", 10)
+        mn_ratio = params.get("MN_ratio", 0.5)
+        fp_ratio = params.get("FP_ratio", 2)
+        extra = n_seq * n_neighbors * (1 + mn_ratio + fp_ratio) * 12
+    elif method == "trimap":
+        # triplets ~= n x (n_inliers x n_outliers + n_random); library
+        # defaults n_outliers=5, n_random=5; ~16 bytes per triplet
+        n_inliers = params.get("n_inliers", 10)
+        extra = n_seq * (n_inliers * 5 + 5) * 16
+    else:
+        # unknown method (kernel_pca, sparse_pca, lle, ...): keep the old
+        # conservative multiplier so the guard never weakens
+        extra = x_bytes * 3
+
+    return (x_bytes + extra) / (1024 ** 3)
+
+
 def _run_single_method(
     X: np.ndarray,
     method: str,
@@ -353,9 +401,13 @@ def _run_parameter_screen(
     # without re-reading anything back from disk.
     density_combos: list[tuple[float, float, pd.DataFrame]] = []
 
+    # single source of truth for embedding column names: save_embedding,
+    # track_density and the render call below must all agree on these
+    coord_cols = [f"{method}_{i+1}" for i in range(dims)]
+
     def save_embedding(embedding: np.ndarray, param_str: str):
         """Helper to save a DataFrame with sequence_id."""
-        df = pd.DataFrame(embedding, columns=[f"{method}_{i+1}" for i in range(dims)])
+        df = pd.DataFrame(embedding, columns=coord_cols)
         df.insert(0, "sequence_id", sequence_ids)
         out_file = output_dir / f"{input_name}_{normalisation}_{method}_{param_str}_{dims}D.tsv"
         df.to_csv(out_file, sep="\t", index=False)
@@ -364,7 +416,14 @@ def _run_parameter_screen(
 
     def track_density(axis1_value: float, axis2_value: float, df: pd.DataFrame):
         if dims >= 2:
-            density_combos.append((axis1_value, axis2_value, df))
+            # keep only the two coordinate columns the density renderer reads.
+            # Retaining the full frame would hold one duplicated object-dtype
+            # sequence_id column (~95 bytes/row) per grid combination for the
+            # entire screen — a multi-GB accumulation on large read sets. The
+            # .copy() detaches the slice from the full frame so the original
+            # (and its sequence_id strings) is freed at end of iteration.
+            coords = df[coord_cols[:2]].copy()
+            density_combos.append((axis1_value, axis2_value, coords))
 
     import time as _time
 
@@ -510,8 +569,8 @@ def _run_parameter_screen(
             combos=density_combos,
             axis1_name=axis1_name,
             axis2_name=axis2_name,
-            xcol=f"{method}_1",
-            ycol=f"{method}_2",
+            xcol=coord_cols[0],
+            ycol=coord_cols[1],
             outdir=output_dir,
             method=method,
         )

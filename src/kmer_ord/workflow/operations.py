@@ -95,6 +95,7 @@ class MatrixPreprocessing(Operation):
         pca_dim_red=False,
         keep_pcs=None,
         keep_variance=None,
+        pca_method="pca",
         scale="auto",
         max_memory_gb=None,
     ):
@@ -102,14 +103,29 @@ class MatrixPreprocessing(Operation):
         self.pca_dim_red = pca_dim_red
         self.keep_pcs = keep_pcs
         self.keep_variance = keep_variance
+        self.pca_method = pca_method
         self.scale = scale
         self.max_memory_gb = max_memory_gb
 
     def run(self, context):
+        matrix_path = context.get("kmer_matrix")
+
+        with BenchmarkTimer(
+            label=self.name,
+            input_file=matrix_path,
+            input_args=(
+                f"normalisations={','.join(self.normalisations)}, "
+                f"pca_dim_red={self.pca_dim_red}, keep_pcs={self.keep_pcs}, "
+                f"keep_variance={self.keep_variance}, pca_method={self.pca_method}"
+            ),
+        ) as bt:
+            self._run(context, matrix_path, bt)
+
+    def _run(self, context, matrix_path, bt):
         import numpy as np
         # Load full matrix including sequence_id column
-        matrix_path = context.get("kmer_matrix")
         matrix = load_matrix(matrix_path)
+        bt.record_input_shape(*matrix.shape)
 
         #if "sequence_id" not in matrix.columns:
         #    raise RuntimeError("Input matrix must contain 'sequence_id' column.")
@@ -145,6 +161,7 @@ class MatrixPreprocessing(Operation):
                         X,
                         keep_pcs=self.keep_pcs,
                         keep_variance=self.keep_variance,
+                        method=self.pca_method,
                     )
 
                 np.save(out_path, X)
@@ -216,20 +233,6 @@ class DimensionalityReduction(Operation):
 
             context.logger.info(f"Running DR for: {matrix_path.name}")
 
-            X = np.load(matrix_path)
-
-            # Load corresponding sequence IDs
-            sequence_ids = np.load(seqid_paths[i])
-
-            # Memory check
-            if self.max_memory_gb:
-                est_peak = X.nbytes * 4 / (1024 ** 3)
-                if est_peak > self.max_memory_gb:
-                    raise MemoryError(
-                        f"Estimated peak {est_peak:.2f} GB exceeds "
-                        f"limit {self.max_memory_gb:.2f} GB"
-                    )
-
             # Expected merged output location
             merged_output = (
                 dr_dir
@@ -237,7 +240,8 @@ class DimensionalityReduction(Operation):
                 / f"{input_name}_{norm_label}_{self.dims}D_merged_embeddings.tsv"
             )
 
-            # Caching behaviour
+            # Caching behaviour (checked before loading the matrix so a
+            # cached run doesn't pay the load cost or log a benchmark row)
             if merged_output.exists() and not context.force:
                 merged_outputs.append(merged_output)
 
@@ -249,25 +253,67 @@ class DimensionalityReduction(Operation):
 
                 continue
 
-            # Run DR with proper sequence IDs
-            merged_file, graph_paths = run_dr_methods(
-                X=X,
-                methods=self.methods,
-                dims=self.dims,
-                seed=self.seed,
-                scale=self.scale,
-                screen_params=self.screen_params,
-                screen_values1=self.screen_values1,
-                screen_values2=self.screen_values2,
-                screen_range1=self.screen_range1,
-                screen_range2=self.screen_range2,
-                screen_grid=self.screen_grid,
-                output_dir=dr_dir,
-                normalisation=norm_label,
-                input_name=input_name,
-                sequence_ids=sequence_ids,
-                n_jobs=self.threads,
-            )
+            with BenchmarkTimer(
+                label=f"{self.name}_{norm_label}",
+                input_file=matrix_path,
+                input_args=(
+                    f"methods={','.join(self.methods)}, dims={self.dims}, "
+                    f"scale={self.scale}, screen_params={self.screen_params}, "
+                    f"threads={self.threads}"
+                ),
+            ) as bt:
+                X = np.load(matrix_path)
+                bt.record_input_shape(*X.shape)
+
+                # Load corresponding sequence IDs
+                sequence_ids = np.load(seqid_paths[i])
+
+                # Memory check: per-method estimates including neighbor
+                # graphs / pair tables (the old X.nbytes*4 heuristic ignored
+                # them and let e.g. n_neighbors=200 UMAP fits OOM unchecked)
+                if self.max_memory_gb:
+                    from kmer_ord.dr.methods import (
+                        ALL_METHODS,
+                        _resolve_scale,
+                        estimate_peak_memory_gb,
+                    )
+                    n_seq, n_feat = X.shape
+                    resolved_scale = _resolve_scale(self.scale, n_seq)
+                    methods = (
+                        self.methods if "all" not in self.methods else ALL_METHODS
+                    )
+                    estimates = {
+                        m: estimate_peak_memory_gb(n_seq, n_feat, m, resolved_scale)
+                        for m in methods
+                    }
+                    worst_method = max(estimates, key=estimates.get)
+                    est_peak = estimates[worst_method]
+                    if est_peak > self.max_memory_gb:
+                        raise MemoryError(
+                            f"Estimated peak {est_peak:.2f} GB for method "
+                            f"'{worst_method}' (scale={resolved_scale}) exceeds "
+                            f"limit {self.max_memory_gb:.2f} GB"
+                        )
+
+                # Run DR with proper sequence IDs
+                merged_file, graph_paths = run_dr_methods(
+                    X=X,
+                    methods=self.methods,
+                    dims=self.dims,
+                    seed=self.seed,
+                    scale=self.scale,
+                    screen_params=self.screen_params,
+                    screen_values1=self.screen_values1,
+                    screen_values2=self.screen_values2,
+                    screen_range1=self.screen_range1,
+                    screen_range2=self.screen_range2,
+                    screen_grid=self.screen_grid,
+                    output_dir=dr_dir,
+                    normalisation=norm_label,
+                    input_name=input_name,
+                    sequence_ids=sequence_ids,
+                    n_jobs=self.threads,
+                )
 
             merged_outputs.append(merged_file)
 
@@ -302,7 +348,9 @@ class KmerMetrics(Operation):
                 typer.echo(f"Skipping KmerMetrics, output exists: {output_file}")
                 context.logger.info(f"Skipping KmerMetrics, output exists: {output_file}")
             else:
-                metrics_df = process_kmer_file(
+                # metrics are streamed to output_file; nothing is returned
+                # into memory here by design (see kmer_stats.process_kmer_file)
+                process_kmer_file(
                     input_file=matrix_path,
                     output_file=output_file,
                     chunksize=self.chunksize,

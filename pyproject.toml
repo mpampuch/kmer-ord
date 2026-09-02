@@ -34,8 +34,16 @@ dependencies = [
     "tqdm"
 ]
 
+[project.optional-dependencies]
+dev = [
+    "pytest",
+]
+
 [project.scripts]
 kmer-ord = "kmer_ord.cli.main:app"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
 
 [tool.setuptools]
 package-dir = {"" = "src"}
