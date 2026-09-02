@@ -3,7 +3,27 @@ from pathlib import Path
 from typing import Dict
 import logging
 
-class Context:
+
+class _HasBenchmarkDir:
+    """Shared per-run benchmark log location: {output_dir}/benchmarking/."""
+
+    script_name = None
+
+    @property
+    def benchmark_dir(self) -> Path:
+        d = Path(self.output_dir) / "benchmarking"
+        d.mkdir(parents=True, exist_ok=True)
+        return d
+
+    def benchmark_timer(self, label, **kwargs):
+        from kmer_ord.utils.benchmark import BenchmarkTimer
+        kwargs.setdefault("log_dir", str(self.benchmark_dir))
+        if self.script_name and "script_name" not in kwargs:
+            kwargs["script_name"] = self.script_name
+        return BenchmarkTimer(label=label, **kwargs)
+
+
+class Context(_HasBenchmarkDir):
     """
     Context holds input/output paths and artifacts for the pipeline.
 
@@ -22,7 +42,14 @@ class Context:
         "figures": "figures"
     }
 
-    def __init__(self, input_file: Path, output_dir: Path, force: bool = False, threads: int = 1):
+    def __init__(
+        self,
+        input_file: Path,
+        output_dir: Path,
+        force: bool = False,
+        threads: int = 1,
+        script_name: str | None = None,
+    ):
         from kmer_ord.io.sequence import load_fasta_or_convert
         self.input_file: Path = Path(input_file)
         self.output_dir: Path = Path(output_dir)
@@ -30,13 +57,15 @@ class Context:
 
         self.force: bool = force  # force recalculation even if files exist
         self.threads: int = threads
+        self.script_name = script_name
         self.artifacts: Dict[str, Path] = {}
         self.logger = logging.getLogger("kmer-ord")
 
         # Automatically create canonical FASTA
-        self.fasta: Path = load_fasta_or_convert(
-            self.input_file, self.output_dir, force=self.force, threads=self.threads
-        )
+        with self.benchmark_timer("fasta_convert", input_file=self.input_file):
+            self.fasta: Path = load_fasta_or_convert(
+                self.input_file, self.output_dir, force=self.force, threads=self.threads
+            )
         self.register("fasta", self.fasta)
 
     # -------------------------
@@ -117,9 +146,10 @@ class Context:
             self.logger.info(f"Skipping '{name}', artifact already exists at {self.artifacts[name]}")
         return exists
     
-class DBContext:
-    def __init__(self, db_path: Path):
+class DBContext(_HasBenchmarkDir):
+    def __init__(self, db_path: Path, script_name: str | None = None):
         self.output_dir = db_path.parent
+        self.script_name = script_name
         self.artifacts = {"database": db_path}
 
     def register(self, name: str, path):
@@ -129,14 +159,21 @@ class DBContext:
         return self.artifacts[name]
 
 
-class MatrixContext:
+class MatrixContext(_HasBenchmarkDir):
     """Lightweight context for matrix-based workflows that skip FASTA input."""
 
-    def __init__(self, matrix_path: Path, output_dir: Path, force: bool = False):
+    def __init__(
+        self,
+        matrix_path: Path,
+        output_dir: Path,
+        force: bool = False,
+        script_name: str | None = None,
+    ):
         self.input_file = Path(matrix_path)
         self.output_dir = Path(output_dir)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         self.force = force
+        self.script_name = script_name
         self.artifacts: Dict[str, Path] = {}
         self.logger = logging.getLogger("kmer-ord")
         self.register("kmer_matrix", matrix_path)

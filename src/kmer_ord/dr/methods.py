@@ -3,6 +3,16 @@ import numpy as np
 import pandas as pd
 from pathlib import Path
 from kmer_ord.utils.logging_utils import section, info, warn, divider, console
+from kmer_ord.utils.benchmark import BenchmarkTimer
+
+
+def _dr_timer(label, log_dir, script_name=None, **kwargs):
+    """BenchmarkTimer that writes to the per-run log when log_dir is set."""
+    if log_dir is not None:
+        kwargs["log_dir"] = log_dir
+    if script_name:
+        kwargs["script_name"] = script_name
+    return BenchmarkTimer(label=label, **kwargs)
 
 
 def _fmt_time(seconds: float) -> str:
@@ -219,6 +229,8 @@ def run_dr_methods(
     screen_range1: list[str] | None = None,
     screen_range2: list[str] | None = None,
     screen_grid: str | None = None,
+    log_dir: str | None = None,
+    script_name: str | None = None,
 ) -> tuple[Path, list[Path]]:
     """
     Run selected DR methods for a single normalisation.
@@ -294,6 +306,8 @@ def run_dr_methods(
                 range1=screen_range1,
                 range2=screen_range2,
                 grid=screen_grid,
+                log_dir=log_dir,
+                script_name=script_name,
             )
 
         # Default embedding
@@ -305,14 +319,19 @@ def run_dr_methods(
             info(f"{'':>{m}}  {params_str}")
         t0 = time.perf_counter()
 
-        embedding, graph = _run_single_method(
-            X=X,
-            method=method,
-            dims=dims,
-            seed=seed,
-            scale=resolved_scale,
-            n_jobs=n_jobs,
-        )
+        with _dr_timer(
+            label=f"dr_{normalisation}_{method}",
+            log_dir=log_dir,
+            script_name=script_name,
+        ):
+            embedding, graph = _run_single_method(
+                X=X,
+                method=method,
+                dims=dims,
+                seed=seed,
+                scale=resolved_scale,
+                n_jobs=n_jobs,
+            )
 
         elapsed = time.perf_counter() - t0
 
@@ -364,6 +383,8 @@ def _run_parameter_screen(
     range1: list[str] | None = None,
     range2: list[str] | None = None,
     grid: str | None = None,
+    log_dir: str | None = None,
+    script_name: str | None = None,
 ) -> list[Path]:
     """
     Perform parameter screening for a given DR method.
@@ -425,6 +446,14 @@ def _run_parameter_screen(
             coords = df[coord_cols[:2]].copy()
             density_combos.append((axis1_value, axis2_value, coords))
 
+    def timed_fit(param_str, model):
+        with _dr_timer(
+            label=f"dr_screen_{normalisation}_{method}_{param_str}",
+            log_dir=log_dir,
+            script_name=script_name,
+        ):
+            return model.fit_transform(X)
+
     import time as _time
 
     pw = 36  # fixed width for params column so elapsed times align
@@ -445,7 +474,7 @@ def _run_parameter_screen(
                 if default_axis2 is not None:
                     kwargs["min_dist"] = default_axis2
                 model = umap.UMAP(n_components=dims, n_jobs=n_jobs, **kwargs)
-                embedding = model.fit_transform(X)
+                embedding = timed_fit(f"n{n}", model)
                 df = save_embedding(embedding, param_str=f"n{n}")
                 track_density(n, default_axis2 or 0, df)
                 info(f"{'n_neighbors=' + str(n):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")
@@ -455,7 +484,7 @@ def _run_parameter_screen(
                 for m in axis2_vals:
                     t0 = _time.perf_counter()
                     model = umap.UMAP(n_components=dims, n_neighbors=n, min_dist=m, n_jobs=n_jobs)
-                    embedding = model.fit_transform(X)
+                    embedding = timed_fit(f"n{n}_min{m}", model)
                     df = save_embedding(embedding, param_str=f"n{n}_min{m}")
                     track_density(n, m, df)
                     info(f"{'n_neighbors=' + str(n) + '  min_dist=' + str(m):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")
@@ -469,7 +498,7 @@ def _run_parameter_screen(
                 if default_axis2 is not None:
                     kwargs["learning_rate"] = default_axis2
                 model = TSNE(n_components=dims, max_iter=1000, random_state=seed, n_jobs=n_jobs, **kwargs)
-                embedding = model.fit_transform(X)
+                embedding = timed_fit(f"p{p}", model)
                 df = save_embedding(embedding, param_str=f"p{p}")
                 track_density(p, default_axis2 or 0, df)
                 info(f"{'perplexity=' + str(p):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")
@@ -480,7 +509,7 @@ def _run_parameter_screen(
                     t0 = _time.perf_counter()
                     model = TSNE(n_components=dims, perplexity=p, learning_rate=lr,
                                  max_iter=1000, random_state=seed, n_jobs=n_jobs)
-                    embedding = model.fit_transform(X)
+                    embedding = timed_fit(f"p{p}_lr{lr}", model)
                     df = save_embedding(embedding, param_str=f"p{p}_lr{lr}")
                     track_density(p, lr, df)
                     info(f"{'perplexity=' + str(p) + '  learning_rate=' + str(lr):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")
@@ -494,7 +523,7 @@ def _run_parameter_screen(
                 if default_axis2 is not None:
                     kwargs["weight_temp"] = default_axis2
                 model = TRIMAP(n_dims=dims, **kwargs)
-                embedding = model.fit_transform(X)
+                embedding = timed_fit(f"inliers{n}", model)
                 df = save_embedding(embedding, param_str=f"inliers{n}")
                 track_density(n, default_axis2 or 0, df)
                 info(f"{'n_inliers=' + str(n):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")
@@ -504,7 +533,7 @@ def _run_parameter_screen(
                 for w in axis2_vals:
                     t0 = _time.perf_counter()
                     model = TRIMAP(n_dims=dims, n_inliers=n, weight_temp=w)
-                    embedding = model.fit_transform(X)
+                    embedding = timed_fit(f"inliers{n}_weighttemp{w}", model)
                     df = save_embedding(embedding, param_str=f"inliers{n}_weighttemp{w}")
                     track_density(n, w, df)
                     info(f"{'n_inliers=' + str(n) + '  weight_temp=' + str(w):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")
@@ -518,7 +547,7 @@ def _run_parameter_screen(
                 if default_axis2 is not None:
                     kwargs["FP_ratio"] = default_axis2
                 model = PaCMAP(n_components=dims, **kwargs)
-                embedding = model.fit_transform(X)
+                embedding = timed_fit(f"n{n}", model)
                 df = save_embedding(embedding, param_str=f"n{n}")
                 track_density(n, default_axis2 or 0, df)
                 info(f"{'n_neighbors=' + str(n):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")
@@ -528,7 +557,7 @@ def _run_parameter_screen(
                 for fp in axis2_vals:
                     t0 = _time.perf_counter()
                     model = PaCMAP(n_components=dims, n_neighbors=n, FP_ratio=fp)
-                    embedding = model.fit_transform(X)
+                    embedding = timed_fit(f"n{n}_FPratio{fp}", model)
                     df = save_embedding(embedding, param_str=f"n{n}_FPratio{fp}")
                     track_density(n, fp, df)
                     info(f"{'n_neighbors=' + str(n) + '  FP_ratio=' + str(fp):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")
@@ -542,7 +571,7 @@ def _run_parameter_screen(
                 if default_axis2 is not None:
                     kwargs["FP_ratio"] = default_axis2
                 model = LocalMAP(n_components=dims, **kwargs)
-                embedding = model.fit_transform(X)
+                embedding = timed_fit(f"n{n}", model)
                 df = save_embedding(embedding, param_str=f"n{n}")
                 track_density(n, default_axis2 or 0, df)
                 info(f"{'n_neighbors=' + str(n):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")
@@ -552,7 +581,7 @@ def _run_parameter_screen(
                 for fp in axis2_vals:
                     t0 = _time.perf_counter()
                     model = LocalMAP(n_components=dims, n_neighbors=n, FP_ratio=fp)
-                    embedding = model.fit_transform(X)
+                    embedding = timed_fit(f"n{n}_FPratio{fp}", model)
                     df = save_embedding(embedding, param_str=f"n{n}_FPratio{fp}")
                     track_density(n, fp, df)
                     info(f"{'n_neighbors=' + str(n) + '  FP_ratio=' + str(fp):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")

@@ -69,3 +69,13 @@ kmer-ord setup
 ```bash
 kmer-ord --help
 ```
+
+## Usage
+
+Each `project` / `cluster` / `dr` run writes wall time and peak RAM per stage (and per inner step) to `{output}/benchmarking/benchmark_log.tsv`.
+
+Large-matrix recipe — PCA-pre with IncrementalPCA before DR:
+
+```bash
+kmer-ord project -i reads.fastq -o out --pca-pre --keep-pcs 50 --pca-pre-method ipca
+```
