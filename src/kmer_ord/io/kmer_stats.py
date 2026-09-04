@@ -16,16 +16,15 @@ import pandas as pd
 
 from kmer_ord.utils.logging_utils import section, info
 
-# Output schema. Names follow the memory-audit corrections: the historical
-# names were misleading (`total_nonzero_kmers` was really the total count sum,
-# `shannon_evenness` was raw entropy in nats, `shannon_diversity` was entropy
-# in bits). `shannon_evenness` is now true Pielou evenness (H / ln S).
+# Refactored stats: the old names were misleading (`total_nonzero_kmers` was really the total count sum,
+# `shannon_evenness` was raw entropy in nats, `shannon_diversity` was entropy in bits).
+# `pielou_evenness` is now true Pielou evenness (H / ln S).
 METRIC_COLUMNS = [
     "total_kmer_counts",
     "num_nonzero_kmers",
     "shannon_entropy_nats",
     "shannon_entropy_bits",
-    "shannon_evenness",
+    "pielou_evenness",
 ]
 
 
@@ -112,7 +111,7 @@ def calculate_kmer_metrics_chunk(kmer_df: pd.DataFrame) -> pd.DataFrame:
     shannon_bits = shannon_nats / math.log(2)
     # Pielou evenness H / ln(S); defined as 1.0 when only one k-mer type is
     # present (maximum evenness of a single category, avoids ln(1)=0 division)
-    shannon_evenness = np.where(
+    pielou_evenness = np.where(
         num_nonzero > 1,
         shannon_nats / np.log(np.maximum(num_nonzero, 2)),
         1.0,
@@ -124,7 +123,7 @@ def calculate_kmer_metrics_chunk(kmer_df: pd.DataFrame) -> pd.DataFrame:
             "num_nonzero_kmers": num_nonzero,
             "shannon_entropy_nats": shannon_nats,
             "shannon_entropy_bits": shannon_bits,
-            "shannon_evenness": shannon_evenness,
+            "pielou_evenness": pielou_evenness,
         },
         index=kmer_df.index,
     )
