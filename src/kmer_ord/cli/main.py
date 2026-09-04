@@ -575,11 +575,9 @@ def fasta_stats_cmd(
     Calculate per-sequence and overall statistics from a fasta file.
     """
     from kmer_ord.io.summary import calculate_stats
-   
+
     context = Context(input, output_dir, force=force)
-    df, overall_file, tsv_file = calculate_stats(
-        input_fasta=context.fasta,
-        output_dir=context.output_dir / "summary")
+    overall_file, tsv_file = calculate_stats(context)
     info(f"Stats calculated. Sequence-level tsv: {tsv_file}, Overall: {overall_file}")
 
 # -----------------------------
