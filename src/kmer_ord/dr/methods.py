@@ -123,6 +123,51 @@ def estimate_peak_memory_gb(n_seq: int, n_feat: int, method: str, scale: str) ->
     return (x_bytes + extra) / (1024 ** 3)
 
 
+# 2 GiB: above a typical --pca-pre matrix, well below the 10M × 2080 (~83 GB)
+# case that OOM-killed Ibex before any embedding was written.
+_HUGE_X_BYTES = 2 * 1024 ** 3
+
+
+def _warn_if_huge_matrix(n_seq: int, n_feat: int, nbytes: int) -> None:
+    if nbytes >= _HUGE_X_BYTES:
+        gb = nbytes / (1024 ** 3)
+        warn(
+            f"input matrix is {gb:.1f} GB ({n_seq:,} × {n_feat:,}); "
+            "consider --pca-pre --keep-pcs 50 to shrink it before DR"
+        )
+
+
+def _maybe_disable_internal_pca(params: dict, n_feat: int) -> dict:
+    """Skip TriMAP/PaCMAP/LocalMAP's internal PCA-to-100 when input is already
+    ≤100-d (e.g. after --pca-pre --keep-pcs 100). Result-identical, avoids a
+    redundant float64 copy of X.
+    """
+    kwargs = dict(params)
+    if n_feat <= 100:
+        kwargs["apply_pca"] = False
+    return kwargs
+
+
+def merge_embedding_tsvs(tsv_paths: list[Path], merged_file: Path) -> Path:
+    """Join per-method embedding TSVs on row order, keeping one sequence_id.
+
+    Reads one file at a time so the parent never holds every method's
+    object-dtype ID column simultaneously.
+    """
+    if not tsv_paths:
+        raise RuntimeError("No embeddings to merge")
+    merged_file = Path(merged_file)
+    merged_file.parent.mkdir(parents=True, exist_ok=True)
+    merged = pd.read_csv(tsv_paths[0], sep="\t")
+    for path in tsv_paths[1:]:
+        df = pd.read_csv(path, sep="\t")
+        coords = df.drop(columns=["sequence_id"])
+        merged = pd.concat([merged, coords], axis=1)
+        del df, coords
+    merged.to_csv(merged_file, sep="\t", index=False)
+    return merged_file
+
+
 def _run_single_method(
     X: np.ndarray,
     method: str,
@@ -146,6 +191,7 @@ def _run_single_method(
     #from pacmap.pacmap import LocalMAP
     method = method.lower()
     params = DR_HYPERPARAMS.get(method, {}).get(scale, {})
+    n_feat = X.shape[1]
     graph = None
 
     if method == "pca":
@@ -167,18 +213,18 @@ def _run_single_method(
 
     elif method == "trimap":
         from trimap import TRIMAP
-        model = TRIMAP(n_dims=dims, **params)
+        model = TRIMAP(n_dims=dims, **_maybe_disable_internal_pca(params, n_feat))
         embedding = model.fit_transform(X)
 
     elif method == "pacmap":
         from pacmap import PaCMAP
-        model = PaCMAP(n_components=dims, **params)
+        model = PaCMAP(n_components=dims, **_maybe_disable_internal_pca(params, n_feat))
         embedding = model.fit_transform(X)
         graph = getattr(model, "graph_", None)
 
     elif method == "localmap":
         from pacmap.pacmap import LocalMAP
-        model = LocalMAP(n_components=dims, **params)
+        model = LocalMAP(n_components=dims, **_maybe_disable_internal_pca(params, n_feat))
         embedding = model.fit_transform(X)
         graph = getattr(model, "graph_", None)
 
@@ -212,8 +258,150 @@ def _run_single_method(
     return embedding, graph
 
 
+def _write_embedding_tsv(embedding, sequence_ids, columns, out_file: Path) -> Path:
+    df_embed = pd.DataFrame(embedding, columns=columns)
+    df_embed.insert(0, "sequence_id", sequence_ids)
+    out_file.parent.mkdir(parents=True, exist_ok=True)
+    df_embed.to_csv(out_file, sep="\t", index=False)
+    return out_file
+
+
+def _run_one_method_and_save(
+    X,
+    sequence_ids,
+    method: str,
+    dims: int,
+    seed: int,
+    resolved_scale: str,
+    n_jobs: int,
+    output_dir: Path,
+    normalisation: str,
+    input_name: str,
+    screen_params: bool,
+    screen_values1,
+    screen_values2,
+    screen_range1,
+    screen_range2,
+    screen_grid,
+    log_dir,
+    script_name,
+) -> tuple[Path, Path | None]:
+    """Fit one method, write its TSV (and graph if any). Used in-process and in the child."""
+    import scipy.sparse as sparse
+    import time
+
+    method = method.lower()
+    method_dir = output_dir / normalisation / method
+    method_dir.mkdir(parents=True, exist_ok=True)
+
+    if screen_params and method in SCREENABLE_METHODS:
+        screen_dir = method_dir / "parameter_screen"
+        screen_dir.mkdir(parents=True, exist_ok=True)
+        _run_parameter_screen(
+            X=X,
+            method=method,
+            dims=dims,
+            seed=seed,
+            scale=resolved_scale,
+            output_dir=screen_dir,
+            normalisation=normalisation,
+            input_name=input_name,
+            sequence_ids=sequence_ids,
+            n_jobs=n_jobs,
+            values1=screen_values1,
+            values2=screen_values2,
+            range1=screen_range1,
+            range2=screen_range2,
+            grid=screen_grid,
+            log_dir=log_dir,
+            script_name=script_name,
+        )
+
+    m = 14
+    params = DR_HYPERPARAMS.get(method, {}).get(resolved_scale, {})
+    info(f"{method:<{m}}  running")
+    if params:
+        params_str = "  ".join(f"{k}={v}" for k, v in params.items())
+        info(f"{'':>{m}}  {params_str}")
+    t0 = time.perf_counter()
+
+    with _dr_timer(
+        label=f"dr_{normalisation}_{method}",
+        log_dir=log_dir,
+        script_name=script_name,
+    ):
+        embedding, graph = _run_single_method(
+            X=X,
+            method=method,
+            dims=dims,
+            seed=seed,
+            scale=resolved_scale,
+            n_jobs=n_jobs,
+        )
+
+    elapsed = time.perf_counter() - t0
+
+    columns = [f"{method}_{i+1}" for i in range(dims)]
+    out_file = method_dir / f"{input_name}_{normalisation}_{method}_{dims}D.tsv"
+    _write_embedding_tsv(embedding, sequence_ids, columns, out_file)
+
+    graph_file = None
+    graph_note = ""
+    if graph is not None:
+        graph_file = method_dir / f"{input_name}_{normalisation}_{method}_graph.npz"
+        if not sparse.issparse(graph):
+            graph = sparse.csr_matrix(graph)
+        sparse.save_npz(graph_file, graph)
+        graph_note = "  (+ graph)"
+
+    info(f"{'':>{m}}  done  {_fmt_time(elapsed)}{graph_note}")
+    divider()
+    return out_file, graph_file
+
+
+def _fit_one_method_worker(payload: dict) -> dict:
+    """Child process: load matrix from disk, fit one method, write TSV, exit.
+
+    Loading from a path (not a pickled array) keeps the parent from holding X
+    during the fit. A fresh process per method actually returns RSS to the OS.
+
+    KMER_ORD_DR_FAIL_METHOD is a test hook: spawned workers re-import this
+    module, so a parent monkeypatch cannot inject a crash.
+    """
+    import os
+
+    method = payload["method"]
+    fail = os.environ.get("KMER_ORD_DR_FAIL_METHOD")
+    if fail and fail == method:
+        os._exit(1)
+
+    X = np.load(payload["matrix_path"])
+    sequence_ids = np.load(payload["seqid_path"])
+    tsv, graph = _run_one_method_and_save(
+        X=X,
+        sequence_ids=sequence_ids,
+        method=method,
+        dims=payload["dims"],
+        seed=payload["seed"],
+        resolved_scale=payload["resolved_scale"],
+        n_jobs=payload["n_jobs"],
+        output_dir=Path(payload["output_dir"]),
+        normalisation=payload["normalisation"],
+        input_name=payload["input_name"],
+        screen_params=payload["screen_params"],
+        screen_values1=payload["screen_values1"],
+        screen_values2=payload["screen_values2"],
+        screen_range1=payload["screen_range1"],
+        screen_range2=payload["screen_range2"],
+        screen_grid=payload["screen_grid"],
+        log_dir=payload["log_dir"],
+        script_name=payload["script_name"],
+    )
+    return {"tsv": str(tsv), "graph": str(graph) if graph is not None else None}
+
+
 def run_dr_methods(
-    X: np.ndarray | pd.DataFrame,
+    X: np.ndarray | pd.DataFrame | None,
     methods: list[str],
     dims: int,
     seed: int,
@@ -231,12 +419,19 @@ def run_dr_methods(
     screen_grid: str | None = None,
     log_dir: str | None = None,
     script_name: str | None = None,
+    matrix_path: Path | str | None = None,
+    seqid_path: Path | str | None = None,
+    isolate: bool = False,
 ) -> tuple[Path, list[Path]]:
     """
     Run selected DR methods for a single normalisation.
 
     Adds sequence_id column to all embeddings for downstream merging.
     Saves graph objects if produced by a method.
+
+    When isolate=True the parent must not hold X: each method runs in a fresh
+    process that np.loads matrix_path. A child death skips that method and
+    continues so later methods (e.g. PCA after a UMAP segfault) still write.
 
     Returns
     -------
@@ -245,24 +440,35 @@ def run_dr_methods(
     graph_paths : list[Path]
         List of graph files saved (may be empty)
     """
-    import pandas as pd
-    import numpy as np
-    import scipy.sparse as sparse
-    import time
+    from concurrent.futures import ProcessPoolExecutor
 
-    # Sequence IDs
-    if sequence_ids is None:
-        if isinstance(X, pd.DataFrame):
-            sequence_ids = X.index
-        else:
-            sequence_ids = np.arange(X.shape[0])
-
-    if "all" in methods:
-        methods = ALL_METHODS
-
+    output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    n_seq, n_feat = X.shape
+    if "all" in methods:
+        methods = list(ALL_METHODS)
+    else:
+        methods = [m.lower() for m in methods]
+
+    if isolate:
+        if matrix_path is None or seqid_path is None:
+            raise ValueError("isolate=True requires matrix_path and seqid_path")
+        X_mmap = np.load(matrix_path, mmap_mode="r")
+        n_seq, n_feat = X_mmap.shape
+        nbytes = int(X_mmap.nbytes)
+        del X_mmap
+    else:
+        if X is None:
+            raise ValueError("X is required when isolate=False")
+        n_seq, n_feat = X.shape
+        nbytes = int(getattr(X, "nbytes", n_seq * n_feat * 4))
+        if sequence_ids is None:
+            if isinstance(X, pd.DataFrame):
+                sequence_ids = X.index
+            else:
+                sequence_ids = np.arange(n_seq)
+
+    _warn_if_huge_matrix(n_seq, n_feat, nbytes)
     resolved_scale = _resolve_scale(scale, n_seq)
     w = 16
     section(f"dimensionality reduction  ·  {normalisation}")
@@ -272,96 +478,83 @@ def run_dr_methods(
     info(f"{'scale / dims':<{w}}  {scale_label}  /  {dims}D")
     if n_jobs > 1:
         info(f"{'threads':<{w}}  {n_jobs}")
+    if isolate:
+        info(f"{'isolate':<{w}}  per-method subprocess")
 
     divider()
 
-    dfs = []
+    embedding_paths: list[Path] = []
     graph_paths: list[Path] = []
 
+    common_payload = {
+        "dims": dims,
+        "seed": seed,
+        "resolved_scale": resolved_scale,
+        "n_jobs": n_jobs,
+        "output_dir": str(output_dir),
+        "normalisation": normalisation,
+        "input_name": input_name,
+        "screen_params": screen_params,
+        "screen_values1": screen_values1,
+        "screen_values2": screen_values2,
+        "screen_range1": screen_range1,
+        "screen_range2": screen_range2,
+        "screen_grid": screen_grid,
+        "log_dir": log_dir,
+        "script_name": script_name,
+        "matrix_path": str(matrix_path) if matrix_path is not None else None,
+        "seqid_path": str(seqid_path) if seqid_path is not None else None,
+    }
+
     for method in methods:
+        try:
+            if isolate:
+                payload = {**common_payload, "method": method}
+                # A new executor per method so the worker process actually exits
+                # and returns RSS; a long-lived pool would keep numba heaps.
+                with ProcessPoolExecutor(max_workers=1) as executor:
+                    result = executor.submit(_fit_one_method_worker, payload).result()
+                embedding_paths.append(Path(result["tsv"]))
+                if result.get("graph"):
+                    graph_paths.append(Path(result["graph"]))
+            else:
+                tsv, graph_file = _run_one_method_and_save(
+                    X=X,
+                    sequence_ids=sequence_ids,
+                    method=method,
+                    dims=dims,
+                    seed=seed,
+                    resolved_scale=resolved_scale,
+                    n_jobs=n_jobs,
+                    output_dir=output_dir,
+                    normalisation=normalisation,
+                    input_name=input_name,
+                    screen_params=screen_params,
+                    screen_values1=screen_values1,
+                    screen_values2=screen_values2,
+                    screen_range1=screen_range1,
+                    screen_range2=screen_range2,
+                    screen_grid=screen_grid,
+                    log_dir=log_dir,
+                    script_name=script_name,
+                )
+                embedding_paths.append(tsv)
+                if graph_file is not None:
+                    graph_paths.append(graph_file)
+        except Exception as exc:
+            warn(f"{method} failed ({type(exc).__name__}: {exc}); skipping")
+            divider()
+            continue
 
-        method = method.lower()
+    if not embedding_paths:
+        raise RuntimeError(
+            f"All DR methods failed for normalisation={normalisation}: {methods}"
+        )
 
-        method_dir = output_dir / normalisation / method
-        method_dir.mkdir(parents=True, exist_ok=True)
-
-        # Parameter screening
-        if screen_params and method in SCREENABLE_METHODS:
-            screen_dir = method_dir / "parameter_screen"
-            screen_dir.mkdir(parents=True, exist_ok=True)
-
-            _run_parameter_screen(
-                X=X,
-                method=method,
-                dims=dims,
-                seed=seed,
-                scale=resolved_scale,
-                output_dir=screen_dir,
-                normalisation=normalisation,
-                input_name=input_name,
-                sequence_ids=sequence_ids,
-                n_jobs=n_jobs,
-                values1=screen_values1,
-                values2=screen_values2,
-                range1=screen_range1,
-                range2=screen_range2,
-                grid=screen_grid,
-                log_dir=log_dir,
-                script_name=script_name,
-            )
-
-        # Default embedding
-        m = 14
-        params = DR_HYPERPARAMS.get(method, {}).get(resolved_scale, {})
-        info(f"{method:<{m}}  running")
-        if params:
-            params_str = "  ".join(f"{k}={v}" for k, v in params.items())
-            info(f"{'':>{m}}  {params_str}")
-        t0 = time.perf_counter()
-
-        with _dr_timer(
-            label=f"dr_{normalisation}_{method}",
-            log_dir=log_dir,
-            script_name=script_name,
-        ):
-            embedding, graph = _run_single_method(
-                X=X,
-                method=method,
-                dims=dims,
-                seed=seed,
-                scale=resolved_scale,
-                n_jobs=n_jobs,
-            )
-
-        elapsed = time.perf_counter() - t0
-
-        # Save embedding
-        columns = [f"{method}_{i+1}" for i in range(dims)]
-        df_embed = pd.DataFrame(embedding, columns=columns)
-        df_embed.insert(0, "sequence_id", sequence_ids)
-
-        out_file = method_dir / f"{input_name}_{normalisation}_{method}_{dims}D.tsv"
-        df_embed.to_csv(out_file, sep="\t", index=False)
-
-        # Save graph if available
-        graph_note = ""
-        if graph is not None:
-            graph_file = method_dir / f"{input_name}_{normalisation}_{method}_graph.npz"
-            sparse.save_npz(graph_file, graph)
-            graph_paths.append(graph_file)
-            graph_note = "  (+ graph)"
-
-        info(f"{'':>{m}}  done  {_fmt_time(elapsed)}{graph_note}")
-        divider()
-
-        dfs.append(df_embed)
-
-    # Merge embeddings across methods
-    merged_df = pd.concat(dfs, axis=1)
-    merged_df = merged_df.loc[:, ~merged_df.columns.duplicated()]
-
-    merged_file = output_dir / normalisation / f"{input_name}_{normalisation}_{dims}D_merged_embeddings.tsv"
-    merged_df.to_csv(merged_file, sep="\t", index=False)
+    merged_file = (
+        output_dir / normalisation / f"{input_name}_{normalisation}_{dims}D_merged_embeddings.tsv"
+    )
+    merge_embedding_tsvs(embedding_paths, merged_file)
     info(f"merged  →  {normalisation}/{merged_file.name}")
 
     return merged_file, graph_paths

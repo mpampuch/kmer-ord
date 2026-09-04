@@ -40,7 +40,7 @@ class FastaStats(Operation):
                 context.logger.info("Skipping FastaStats, summary output files already exist.")
                 typer.echo("Skipping FastaStats, summary output files already exist.")
             else:
-                df, overall_file, tsv_file = calculate_stats(context)
+                calculate_stats(context)
 
         # Register artifacts even if skipping
         context.register("summary_overall", overall_path)
@@ -282,21 +282,25 @@ class DimensionalityReduction(Operation):
                     label=f"dr_load_{norm_label}",
                     input_file=matrix_path,
                 ) as load_bt:
-                    X = np.load(matrix_path)
-                    load_bt.record_input_shape(*X.shape)
-                    sequence_ids = np.load(seqid_paths[i])
-                bt.record_input_shape(*X.shape)
+                    # mmap for shape / guard / warning only — do not keep X in
+                    # the parent during the fit (pickling it into a child would
+                    # double RSS).
+                    X_mmap = np.load(matrix_path, mmap_mode="r")
+                    n_seq, n_feat = X_mmap.shape
+                    nbytes = int(X_mmap.nbytes)
+                    load_bt.record_input_shape(n_seq, n_feat)
+                    del X_mmap
+                bt.record_input_shape(n_seq, n_feat)
 
-                # Memory check: per-method estimates including neighbor
-                # graphs / pair tables (the old X.nbytes*4 heuristic ignored
-                # them and let e.g. n_neighbors=200 UMAP fits OOM unchecked)
+                from kmer_ord.dr.methods import (
+                    ALL_METHODS,
+                    _resolve_scale,
+                    _warn_if_huge_matrix,
+                    estimate_peak_memory_gb,
+                )
+                _warn_if_huge_matrix(n_seq, n_feat, nbytes)
+
                 if self.max_memory_gb:
-                    from kmer_ord.dr.methods import (
-                        ALL_METHODS,
-                        _resolve_scale,
-                        estimate_peak_memory_gb,
-                    )
-                    n_seq, n_feat = X.shape
                     resolved_scale = _resolve_scale(self.scale, n_seq)
                     methods = (
                         self.methods if "all" not in self.methods else ALL_METHODS
@@ -314,9 +318,8 @@ class DimensionalityReduction(Operation):
                             f"limit {self.max_memory_gb:.2f} GB"
                         )
 
-                # Run DR with proper sequence IDs
                 merged_file, graph_paths = run_dr_methods(
-                    X=X,
+                    X=None,
                     methods=self.methods,
                     dims=self.dims,
                     seed=self.seed,
@@ -330,10 +333,12 @@ class DimensionalityReduction(Operation):
                     output_dir=dr_dir,
                     normalisation=norm_label,
                     input_name=input_name,
-                    sequence_ids=sequence_ids,
                     n_jobs=self.threads,
                     log_dir=str(context.benchmark_dir),
                     script_name=context.script_name,
+                    matrix_path=matrix_path,
+                    seqid_path=seqid_paths[i],
+                    isolate=True,
                 )
 
             merged_outputs.append(merged_file)
