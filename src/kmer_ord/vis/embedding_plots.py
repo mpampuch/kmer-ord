@@ -13,6 +13,37 @@ from PIL import Image, ImageDraw, ImageFont
 
 from kmer_ord.utils.logging_utils import section, info, warn
 
+# Internal identifier columns (one unique value per sequence) that must never
+# be treated as plottable features — colouring an embedding by them is
+# meaningless, and datashader's ds.by() allocates a
+# (height, width, n_categories) uint32 array, so ~880k sequence_ids at
+# 400x400 means a ~526 GiB allocation (MemoryError).
+IGNORE_FEATURES = {"sequence_id", "header"}
+
+# Hard cap on the ds.by() aggregation array size for a single categorical
+# plot. 1 GiB allows ~1,600 categories at 400x400 — already far beyond the
+# 256-colour glasbey palette, so anything skipped here would have been an
+# unreadable plot anyway.
+MAX_CATEGORICAL_AGG_BYTES = 2**30
+
+
+def _plottable_feature_columns(features_df):
+    """Split a features table into (categorical, continuous) column lists
+    suitable for embedding plots, excluding internal identifier columns.
+    Returns empty lists when the features table is absent (None)."""
+    if features_df is None:
+        return [], []
+    categorical = [
+        col for col in features_df.select_dtypes(include=["object", "category"]).columns
+        if col not in IGNORE_FEATURES
+    ]
+    continuous = [
+        col for col in features_df.select_dtypes(include=[np.number]).columns
+        if col not in IGNORE_FEATURES
+    ]
+    return categorical, continuous
+
+
 def _connect_spatialite(db_path: Path):
     conn = sqlite3.connect(str(db_path))
     conn.enable_load_extension(True)
@@ -40,6 +71,7 @@ def plot_embeddings_from_db(db_path: Path, output_root: Path, mode: str = "all")
 
     features_df = _load_features(conn)
     cluster_df = _load_clusters(conn)
+    categorical_cols, continuous_cols = _plottable_feature_columns(features_df)
 
     # Store precomputed images per method/feature
     per_method_feature = {method: {"categorical": {}, "continuous": {}} for method in methods}
@@ -48,11 +80,10 @@ def plot_embeddings_from_db(db_path: Path, output_root: Path, mode: str = "all")
     # method's panel — and the shared legend on a multi-method composite —
     # maps the same value to the same color.
     continuous_ranges = {}
-    if features_df is not None:
-        for col in features_df.select_dtypes(include=[np.number]).columns:
-            vals = features_df[col].dropna()
-            if not vals.empty:
-                continuous_ranges[col] = (float(vals.min()), float(vals.max()))
+    for col in continuous_cols:
+        vals = features_df[col].dropna()
+        if not vals.empty:
+            continuous_ranges[col] = (float(vals.min()), float(vals.max()))
 
     for method in methods:
         emb_df = _extract_method_coordinates(conn, method)
@@ -71,7 +102,7 @@ def plot_embeddings_from_db(db_path: Path, output_root: Path, mode: str = "all")
 
         # Loop over categorical features
         if mode in ("categorical", "all"):
-            for col in features_df.select_dtypes(include=["object", "category"]).columns:
+            for col in categorical_cols:
                 img, color_key = _render_feature_to_image(merged, xcol, ycol, col, mode="categorical")
                 if img is not None:
                     per_method_feature[method]["categorical"][col] = (img, color_key)
@@ -80,7 +111,7 @@ def plot_embeddings_from_db(db_path: Path, output_root: Path, mode: str = "all")
 
         # Loop over continuous features
         if mode in ("continuous", "all"):
-            for col in features_df.select_dtypes(include=[np.number]).columns:
+            for col in continuous_cols:
                 img, value_range = _render_feature_to_image(
                     merged, xcol, ycol, col, mode="continuous",
                     value_range=continuous_ranges.get(col))
@@ -90,10 +121,10 @@ def plot_embeddings_from_db(db_path: Path, output_root: Path, mode: str = "all")
                     legend_img.save(str(method_dir / f"{method}_by_{col}.png"))
 
     # Build feature composites from cached images
-    for col in features_df.select_dtypes(include=["object", "category"]).columns:
+    for col in categorical_cols:
         _render_feature_composite_from_cache(per_method_feature, col, output_root / "feature_composites", mode="categorical")
 
-    for col in features_df.select_dtypes(include=[np.number]).columns:
+    for col in continuous_cols:
         _render_feature_composite_from_cache(per_method_feature, col, output_root / "feature_composites", mode="continuous")
 
     conn.close()
@@ -214,6 +245,17 @@ def _render_feature_to_image(df, xcol, ycol, feature_col, mode="categorical", wi
         df_local[feature_col] = df_local[feature_col].astype(object)
         df_local.loc[is_na, feature_col] = NA_LABEL
         df_local[feature_col] = df_local[feature_col].astype(str).astype("category")
+
+        # ds.by() allocates a (height, width, n_categories) uint32 array, so
+        # a high-cardinality column (e.g. an identifier that slipped past
+        # column filtering) would request hundreds of GiB. Skip instead.
+        n_categories = len(df_local[feature_col].cat.categories)
+        agg_bytes = width * height * n_categories * 4
+        if agg_bytes > MAX_CATEGORICAL_AGG_BYTES:
+            warn(f"Skipping {feature_col}: {n_categories} unique values would "
+                 f"need {agg_bytes / 2**30:.1f} GiB to aggregate")
+            return None, None
+
         agg = cvs.points(df_local, xcol, ycol, ds.by(feature_col, ds.count()))
         categories = list(df_local[feature_col].cat.categories)
 
@@ -460,7 +502,6 @@ def render_param_screen_density_grid(
 
 
 PREFERRED_DR_ORDER = ["pca", "trimap", "pacmap", "localmap", "umap", "tsne"]
-IGNORE_FEATURES = {"sequence_id", "header"}
 
 def _render_feature_composite_from_cache(per_method_feature, feature_col, outdir, mode, width=400, height=400, padding=10, border=2):
     """
@@ -483,10 +524,6 @@ def _render_feature_composite_from_cache(per_method_feature, feature_col, outdir
     border : int
         Width of the border around each subplot.
     """
-    if feature_col in IGNORE_FEATURES:
-        # Skip internal columns like sequence_id
-        return
-
     images = []
     shared_legend_info = None
     methods_present = [m for m in PREFERRED_DR_ORDER if m in per_method_feature]
