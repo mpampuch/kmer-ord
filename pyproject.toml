@@ -27,6 +27,9 @@ dependencies = [
     "hdbscan",
     "leidenalg",
     "scipy",
+    # >=3.5 guarantees the matplotlib.colormaps registry used by plt.get_cmap
+    # (matplotlib.cm.get_cmap was removed in 3.9 and is no longer used here)
+    "matplotlib>=3.5",
     "datashader",
     "dash",
     "dash-bootstrap-components",

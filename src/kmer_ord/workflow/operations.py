@@ -81,8 +81,13 @@ class KmerCount(Operation):
 # DR
 
 from kmer_ord.dr.loader import load_matrix
-from kmer_ord.dr.preprocess import preprocess_data, reduce_dimensions_with_pca
+from kmer_ord.dr.preprocess import (
+    NORMALISATION_METHODS,
+    preprocess_data,
+    reduce_dimensions_with_pca,
+)
 from kmer_ord.dr.methods import run_dr_methods
+from kmer_ord.utils.logging_utils import section, info
 
 ## do the numpy np.save etc inside the function preprocess data?
 class MatrixPreprocessing(Operation):
@@ -142,11 +147,28 @@ class MatrixPreprocessing(Operation):
         outputs = []
         seqid_outputs = []
 
+        # "all" expands to the normalization methods, NOT dr.methods.ALL_METHODS
+        # (the previous bare ALL_METHODS reference here was an unimported name
+        # and would have listed DR methods anyway)
         normalisations = (
             self.normalisations
             if "all" not in self.normalisations
-            else ALL_METHODS
+            else NORMALISATION_METHODS
         )
+
+        # announce this stage on the console; without this the pipeline log
+        # jumps silently from the k-mer/Tiara sections to the DR section even
+        # though loading + normalising a large matrix takes many minutes
+        w = 16
+        section(f"matrix preprocessing  ·  {', '.join(normalisations)}")
+        info(f"{'input':<{w}}  {matrix.shape[0]:,} sequences  ×  {matrix.shape[1]:,} features")
+        if self.pca_dim_red:
+            pca_target = (
+                f"{self.keep_pcs} PCs"
+                if self.keep_pcs is not None
+                else f"{self.keep_variance} variance"
+            )
+            info(f"{'pca-pre':<{w}}  {self.pca_method}  (keep {pca_target})")
 
         for norm in normalisations:
             # -----------------------------
@@ -154,8 +176,11 @@ class MatrixPreprocessing(Operation):
             # -----------------------------
             out_path = output_dir / f"{matrix_path.stem}_{norm}.npy"
             if out_path.exists() and not context.force:
+                info(f"skipping {norm}, output exists: {out_path.name}")
+                context.logger.info(f"Skipping preprocessing ({norm}), output exists: {out_path}")
                 outputs.append(out_path)
             else:
+                info(f"normalising ({norm})...")
                 with context.benchmark_timer(
                     label=f"preprocess_{norm}",
                     input_file=matrix_path,
@@ -179,6 +204,7 @@ class MatrixPreprocessing(Operation):
                             method=self.pca_method,
                             batch_size=self.pca_batch_size,
                         )
+                    info(f"pca-pre ({self.pca_method}) retained {X.shape[1]} PCs")
 
                 np.save(out_path, X)
                 outputs.append(out_path)

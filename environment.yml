@@ -18,7 +18,7 @@ dependencies:
   - hdbscan
   - hnswlib
   - libspatialite
-  - matplotlib
+  - matplotlib>=3.5
   - seaborn
   - setuptools=65.5.0
   - tqdm

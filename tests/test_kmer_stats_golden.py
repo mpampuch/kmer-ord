@@ -10,7 +10,7 @@ total count sum, `shannon_evenness` was raw entropy in nats):
     num_nonzero_kmers     number of k-mer types present (was: num_unique_kmers)
     shannon_entropy_nats  Shannon entropy, natural log (was: shannon_evenness)
     shannon_entropy_bits  Shannon entropy, log2 (was: shannon_diversity)
-    shannon_evenness      NEW: normalized entropy H / ln(S), 0-1
+    pielou_evenness       NEW: Pielou's J' = H / ln(S), 0-1
 """
 import csv
 import tracemalloc
@@ -71,7 +71,7 @@ def reference_metrics(df: pd.DataFrame) -> pd.DataFrame:
             "num_nonzero_kmers": nonzero,
             "shannon_entropy_nats": nats,
             "shannon_entropy_bits": bits,
-            "shannon_evenness": evenness,
+            "pielou_evenness": evenness,
         },
         index=df.index,
     )
