@@ -73,6 +73,32 @@ def test_unknown_pca_method_raises(clr_matrix):
         reduce_dimensions_with_pca(clr_matrix, keep_pcs=3, method="nope")
 
 
+def test_missing_keep_args_error_names_cli_flags(clr_matrix):
+    # the error must reference the CLI flag spellings, not the Python
+    # parameter names, so users can act on it directly
+    with pytest.raises(ValueError, match=r"--keep-pcs.*--keep-variance"):
+        reduce_dimensions_with_pca(clr_matrix)
+
+
+@pytest.mark.parametrize(
+    "command, base_args",
+    [
+        ("project", ["-i", "x.fa", "-o", "out"]),
+        ("cluster", ["-i", "x.fa", "-o", "out"]),
+        ("dr", ["-i", "x.tsv", "-o", "out", "-m", "umap"]),
+    ],
+)
+def test_cli_pca_pre_requires_keep_flag(command, base_args):
+    """--pca-pre without --keep-pcs/--keep-variance must fail before any work."""
+    from typer.testing import CliRunner
+    from kmer_ord.cli.main import app
+
+    result = CliRunner().invoke(app, [command, *base_args, "--pca-pre"])
+    assert result.exit_code != 0
+    message = result.output or str(result.exception)
+    assert "--keep-pcs" in message and "--keep-variance" in message
+
+
 def test_pca_ignores_batch_size(clr_matrix):
     expected = reduce_dimensions_with_pca(clr_matrix, keep_pcs=3, method="pca")
     result = reduce_dimensions_with_pca(

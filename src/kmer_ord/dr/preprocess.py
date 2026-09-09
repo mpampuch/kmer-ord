@@ -1,6 +1,10 @@
 # src/kmer_ord/dr/preprocess.py
 import pandas as pd
 
+# Authoritative list of normalization methods accepted by preprocess_data.
+# "--norm all" expands to this (not to the DR-method list in dr/methods.py).
+NORMALISATION_METHODS = ("raw", "relative", "log", "clr", "zscore")
+
 
 def preprocess_data(df: pd.DataFrame, method: str) -> pd.DataFrame:
     """
@@ -46,7 +50,10 @@ def preprocess_data(df: pd.DataFrame, method: str) -> pd.DataFrame:
         X = StandardScaler(copy=False).fit_transform(X)
 
     else:
-        raise ValueError(f"Unknown normalization method: {method}")
+        raise ValueError(
+            f"Unknown normalization method: {method} "
+            f"(expected one of {', '.join(NORMALISATION_METHODS)})"
+        )
 
     # wraps X without copying
     return pd.DataFrame(X, index=df.index, columns=df.columns)
@@ -71,7 +78,11 @@ def reduce_dimensions_with_pca(df: pd.DataFrame,
     import numpy as np
 
     if keep_pcs is None and keep_variance is None:
-        raise ValueError("Either keep_pcs or keep_variance must be specified.")
+        # message uses the CLI flag spellings so pipeline users can act on it
+        raise ValueError(
+            "PCA pre-reduction requires either --keep-pcs or --keep-variance "
+            "to be specified."
+        )
 
     if method == "pca":
         X_pca = _standard_pca(df.values, keep_pcs, keep_variance)

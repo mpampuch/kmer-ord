@@ -29,6 +29,16 @@ _PCA_PRE_BATCH_SIZE_HELP = (
 )
 
 
+def _validate_pca_pre_flags(pca_pre: bool, keep_pcs, keep_variance) -> None:
+    """Fail fast at the CLI: without this check a missing PCA setting only
+    surfaces hours into the pipeline, when MatrixPreprocessing reaches the
+    PCA step."""
+    if pca_pre and keep_pcs is None and keep_variance is None:
+        raise typer.BadParameter(
+            "--pca-pre requires either --keep-pcs or --keep-variance"
+        )
+
+
 #----- header util
 
 def print_header(start_time):
@@ -168,6 +178,7 @@ def run_pipeline(
     Results are stored in the database for dowstream exploration and annotation.
     | fastq -> fasta -> sequence stats -> kmer-counting -> [tiara] -> [rDNA] -> DR -> database |
     """
+    _validate_pca_pre_flags(pca_pre, keep_pcs, keep_variance)
     start_time = datetime.datetime.now()
     print_header(start_time)
     set_global_threads(threads)
@@ -272,6 +283,7 @@ def discover_pipeline(
     integrated into the database for downstream analysis.
     | kmer-profiles -> High-D embedding -> clustering -> database |
     """
+    _validate_pca_pre_flags(pca_pre, keep_pcs, keep_variance)
     start_time = datetime.datetime.now()
     print_header(start_time)
 
@@ -651,6 +663,7 @@ def dr_cmd(
     """
     Run dimensionality reduction on an existing k-mer matrix.
     """
+    _validate_pca_pre_flags(pca_pre, keep_pcs, keep_variance)
     set_global_threads(threads)
     info(f"Using {threads} threads")
 

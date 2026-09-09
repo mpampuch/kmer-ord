@@ -11,7 +11,6 @@ import datashader.transfer_functions as tf
 from colorcet import fire
 import numpy as np
 from dash import dash_table
-import matplotlib.cm as cm
 import matplotlib.colors
 import matplotlib.pyplot as plt
 import bokeh.palettes
@@ -347,7 +346,7 @@ def _cluster_color_key(categories):
         colors = glasbey[:n]
         mode = "categorical"
     else:
-        turbo = cm.get_cmap("turbo")
+        turbo = plt.get_cmap("turbo")
         colors = [
             matplotlib.colors.rgb2hex(turbo(i / max(n - 1, 1)))
             for i in range(n)
@@ -418,7 +417,7 @@ def create_datashader_image(df, x_col, y_col,
     
     else:
         agg = cvs.points(df_ds, x='x', y='y', agg=ds.count())
-        cmap = cm.get_cmap("plasma")
+        cmap = plt.get_cmap("plasma")
         img = tf.shade(agg, cmap=[matplotlib.colors.rgb2hex(cmap(i)) for i in range(cmap.N)], how='eq_hist')
         #img = tf.shade(agg, cmap="fire", how='eq_hist')
     
@@ -521,7 +520,7 @@ def create_panel_legend(df, feature_name, continuous_palette, categorical_palett
             )
 
         cmap_name = continuous_palette if continuous_palette in plt.colormaps() else "viridis"
-        cmap = cm.get_cmap(cmap_name)
+        cmap = plt.get_cmap(cmap_name)
 
         colorscale = []
         for i in range(256):
@@ -1771,7 +1770,7 @@ def update_multiple_coord_plots(
 
                     if vmin != vmax:
                         cmap_name = continuous_palette if continuous_palette in plt.colormaps() else "viridis"
-                        cmap = cm.get_cmap(cmap_name)
+                        cmap = plt.get_cmap(cmap_name)
 
                         colorscale = []
                         for i in range(256):
