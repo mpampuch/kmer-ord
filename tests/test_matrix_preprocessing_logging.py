@@ -1,9 +1,5 @@
 # tests/test_matrix_preprocessing_logging.py
 """The matrix-preprocessing step must announce itself on the console.
-
-Previously the pipeline log jumped from the Tiara/k-mer sections straight to
-'dimensionality reduction' with no trace that normalization (and optional
-PCA pre-reduction) ran, so long silent gaps looked like a hang.
 """
 import numpy as np
 import pandas as pd

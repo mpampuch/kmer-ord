@@ -89,7 +89,6 @@ from kmer_ord.dr.preprocess import (
 from kmer_ord.dr.methods import run_dr_methods
 from kmer_ord.utils.logging_utils import section, info
 
-## do the numpy np.save etc inside the function preprocess data?
 class MatrixPreprocessing(Operation):
     name = "matrix_preprocessing"
     requires = ["kmer_matrix"]
@@ -136,9 +135,6 @@ class MatrixPreprocessing(Operation):
         matrix = load_matrix(matrix_path)
         bt.record_input_shape(*matrix.shape)
 
-        #if "sequence_id" not in matrix.columns:
-        #    raise RuntimeError("Input matrix must contain 'sequence_id' column.")
-
         sequence_ids = matrix.index.to_numpy()
 
         output_dir = context.output_dir / "matrices"
@@ -147,9 +143,8 @@ class MatrixPreprocessing(Operation):
         outputs = []
         seqid_outputs = []
 
-        # "all" expands to the normalization methods, NOT dr.methods.ALL_METHODS
-        # (the previous bare ALL_METHODS reference here was an unimported name
-        # and would have listed DR methods anyway)
+        # "--norm all" expands to NORMALISATION_METHODS (the normalisation
+        # list), not dr.methods.ALL_METHODS (the DR-method list).
         normalisations = (
             self.normalisations
             if "all" not in self.normalisations
@@ -364,6 +359,10 @@ class DimensionalityReduction(Operation):
                     script_name=context.script_name,
                     matrix_path=matrix_path,
                     seqid_path=seqid_paths[i],
+                    # isolate: each method fits in its own subprocess loading
+                    # from matrix_path, so the parent never holds X and a
+                    # crash in one method (e.g. a UMAP segfault) skips only
+                    # that method — later methods still write embeddings.
                     isolate=True,
                 )
 
@@ -746,7 +745,8 @@ class Clustering(Operation):
                 cluster_df.to_csv(output_file, sep="\t", index=False)
                 cluster_outputs.append(output_file)
 
-        # SAFE artifact registration (fixes your NameError issue)
+        # Append to any previously registered clusters so a second clustering
+        # operation in the same run extends the list instead of overwriting it.
         existing = context.artifacts.get("clusters", [])
         if not isinstance(existing, list):
             existing = [existing]

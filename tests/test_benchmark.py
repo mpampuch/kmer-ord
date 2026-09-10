@@ -1,9 +1,9 @@
 # tests/test_benchmark.py
 """Tests for the peak-RSS BenchmarkTimer.
 
-The key property under test: the timer must capture the *peak* resident set
-size during the block (including memory freed before the block exits, and
-memory allocated by child processes), not the start->end RSS delta.
+The timer captures the peak resident set size during the block 
+(including memory freed before the block exits, and memory allocated by child processes), 
+not the start->end RSS delta.
 """
 import csv
 import subprocess

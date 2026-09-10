@@ -6,8 +6,8 @@ Usage:
     # fast per-change check on a seeded synthetic matrix
     python benchmarks/run_benchmarks.py run --tier small
 
-    # milestone validation on the real 3.9 GB 6-mer matrix
-    python benchmarks/run_benchmarks.py run --tier full
+    # milestone validation on a real (multi-GB) k-mer matrix of your choice
+    python benchmarks/run_benchmarks.py run --tier full --full-matrix path/to/matrix.tsv
 
     # compare the two most recent commits present in the log
     python benchmarks/run_benchmarks.py compare
@@ -28,14 +28,6 @@ from pathlib import Path
 BENCH_DIR = Path(__file__).resolve().parent
 DEFAULT_LOG_DIR = BENCH_DIR
 DATA_DIR = BENCH_DIR / "data"
-
-# The real dataset used for milestone (tier=full) validation.
-DEFAULT_FULL_MATRIX = (
-    BENCH_DIR.parent
-    / "my-notes"
-    / "CLR-optimizations"
-    / "62_Coelastrummicroporum.hifi_reads_6mer_matrix.tsv"
-)
 
 # Stage registry: name -> callable(matrix_path, workdir). Stages are
 # self-contained so each can run in an isolated subprocess.
@@ -173,6 +165,9 @@ def cmd_run(args):
             args.n_reads, args.n_features, args.seed
         )
     else:
+        # full tier benchmarks a real dataset. The path to the matrix must be supplied explicitly
+        if not args.full_matrix:
+            sys.exit("--tier full requires --full-matrix <path to k-mer matrix TSV>")
         matrix_path = Path(args.full_matrix)
         if not matrix_path.exists():
             sys.exit(f"Full-tier matrix not found: {matrix_path}")
@@ -291,7 +286,8 @@ def main():
     p_run.add_argument("--n-reads", type=int, default=SMALL_N_READS)
     p_run.add_argument("--n-features", type=int, default=SMALL_N_FEATURES)
     p_run.add_argument("--seed", type=int, default=42)
-    p_run.add_argument("--full-matrix", default=str(DEFAULT_FULL_MATRIX))
+    p_run.add_argument("--full-matrix", default=None,
+                       help="Real k-mer matrix TSV for --tier full")
     p_run.add_argument("--log-dir", default=str(DEFAULT_LOG_DIR))
     p_run.set_defaults(func=cmd_run)
 

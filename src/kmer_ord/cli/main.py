@@ -12,12 +12,16 @@ from kmer_ord.utils.logging_utils import section, info, warn, console
 from kmer_ord.cli.setup import setup_app
 from kmer_ord.utils.threading import set_global_threads
 
-#app = typer.Typer(add_completion=False, rich_markup_mode=None)
 app = typer.Typer(add_completion=False,
                   context_settings={"help_option_names": ["-h", "--help"]})
 
 app.add_typer(setup_app)
 
+# click.Choice (not a plain list) because Typer needs a click_type to parse the command line arguments.
+_DR_METHODS = click.Choice(["umap", "tsne", "pca", "trimap", "pacmap", "localmap"])
+_DR_METHOD_HELP = (
+    "Dimensionality reduction method: 'umap', 'tsne', 'pca', 'trimap', 'pacmap', 'localmap'"
+)
 _PCA_PRE_METHODS = click.Choice(["pca", "ipca"])
 _PCA_PRE_METHOD_HELP = (
     "PCA algorithm for --pca-pre: 'pca' (exact, more RAM) or "
@@ -30,7 +34,7 @@ _PCA_PRE_BATCH_SIZE_HELP = (
 
 
 def _validate_pca_pre_flags(pca_pre: bool, keep_pcs, keep_variance) -> None:
-    """Fail fast at the CLI: without this check a missing PCA setting only
+    """Fail fast at the CLI. Without this check a missing PCA setting only
     surfaces hours into the pipeline, when MatrixPreprocessing reaches the
     PCA step."""
     if pca_pre and keep_pcs is None and keep_variance is None:
@@ -147,7 +151,7 @@ def run_pipeline(
     threads: int = typer.Option(4, "-t","--threads", help="Number of threads"),
 
     # --- DR options ---
-    dr_methods: str = typer.Option("umap","--dr", help="Comma-separated DR methods (default: umap)"),
+    dr_methods: str = typer.Option("umap","--dr", click_type=_DR_METHODS, help=_DR_METHOD_HELP),
     scale: str = typer.Option("auto", "-s","--scale", help="Dataset scale presets for DR hyperparameters (auto, small, medium, large, default)"),
     normalisation: str = typer.Option("clr", "--norm", help="Normalization method (raw, relative, log, clr, zscore)"),
     dims: int = typer.Option(2, "-d","--dims", help="Embedding dimensions"),
@@ -193,6 +197,8 @@ def run_pipeline(
         FastqToFasta, FastaStats, KmerCount, KmerMetrics, Tiara, RDNAMiner, MatrixPreprocessing,
         DimensionalityReduction, FeatureMerge, SpatialiteDatabase)
 
+    # script_name labels every row this run writes to benchmark_log.tsv,
+    # so per-command results can be grouped/compared.
     context = Context(input, output_dir, force=force, threads=threads, script_name="project")
 
     method_list = [m.strip().lower() for m in dr_methods.split(",")]
@@ -253,9 +259,9 @@ def discover_pipeline(
     output_dir: Path = typer.Option(..., "-o", "--output", help="Output directory"),
     kmer_length: int = typer.Option(6, "-k", "--kmer"),
     dims: int = typer.Option(15, "-d", "--dims", help="High-dimensional embedding size"),
-    dr_method: str = typer.Option("umap", "--dr"),
+    dr_method: str = typer.Option("umap", "--dr", click_type=_DR_METHODS, help=_DR_METHOD_HELP),
     scale: str = typer.Option("auto", "-s","--scale", help="Dataset scale presets for DR hyperparameters (auto, small, medium, large, default)"),
-    normalisation: str = typer.Option("clr", "--norm"),
+    normalisation: str = typer.Option("clr", "--norm", help="Normalization method (raw, relative, log, clr, zscore)"),
     pca_pre: bool = typer.Option(False, "--pca-pre", help="Apply PCA before DR"),
     keep_pcs: int = typer.Option(None,"--keep-pcs", help="Number of principal components to retain"),
     keep_variance: float = typer.Option(None,"--keep-variance",help="Variance threshold for PCA (e.g. 0.9)"),

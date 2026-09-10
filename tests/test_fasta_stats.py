@@ -1,9 +1,9 @@
 """Golden-output and streaming-memory tests for per-sequence FASTA stats.
 
-The old implementation slurped each byte-range chunk (`f.read(end-start)` +
+The old implementation took each byte-range chunk (`f.read(end-start)` +
 decode + parse) and pickled every (id, length, gc, at) tuple back to the
-parent. Peak RAM scaled with the FASTA size times the number of workers,
-which OOM-killed 58 Gbp jobs on Ibex.
+parent. So the Peak RAM scaled with the FASTA size times the number of workers,
+which OOM-killed FASTA files that had >58 Gbp of sequences.
 """
 import tracemalloc
 from pathlib import Path
@@ -112,6 +112,7 @@ def test_golden_tsv_and_overall_match_biopython(tmp_path):
 
 
 def test_parallel_matches_serial_tsv(tmp_path):
+    """Chunked workers must write the same per-sequence TSV as a single process."""
     rng = np.random.default_rng(0)
     records = [
         (f"seq_{i}", "".join(rng.choice(list("ATGC"), size=80)))

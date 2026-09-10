@@ -50,11 +50,14 @@ For users
 pip install .
 ```
 
-For developers (editable install)
+For developers (editable install with test dependencies)
 
 ```bash
-pip install -e .
+pip install -e ".[dev]"
 ```
+
+Run the test suite with `pytest`. Per-stage RAM/time benchmarks can be run
+with `python benchmarks/run_benchmarks.py run --tier small`.
 
 ### 4. Set up external tools and databases
 

@@ -3,7 +3,7 @@
 
 The reference implementations below are frozen copies of the original
 (pre-optimization) code paths. The package functions are allowed to change
-*how* they compute (in-place ops, log-difference CLR, single float32 load),
+how they compute (in-place ops, log-difference CLR, single float32 load),
 but the resulting values must stay numerically identical to these references.
 """
 import numpy as np

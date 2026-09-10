@@ -32,6 +32,9 @@ class Context(_HasBenchmarkDir):
     2. Register and retrieve named artifacts.
     3. Provide consistent paths for output files with subdirectory structure.
     4. Provide existence checks and skip logic for pipeline steps.
+    5. Own the per-run benchmark log ({output_dir}/benchmarking/) and the
+       `script_name` label written to every benchmark row (via
+       _HasBenchmarkDir.benchmark_timer).
     """
 
     # Standard subdirectories for artifact types
@@ -61,7 +64,9 @@ class Context(_HasBenchmarkDir):
         self.artifacts: Dict[str, Path] = {}
         self.logger = logging.getLogger("kmer-ord")
 
-        # Automatically create canonical FASTA
+        # Automatically create canonical FASTA. Timed because converting a
+        # large gzipped FASTQ can take minutes and would otherwise be an
+        # unexplained gap in the benchmark log.
         with self.benchmark_timer("fasta_convert", input_file=self.input_file):
             self.fasta: Path = load_fasta_or_convert(
                 self.input_file, self.output_dir, force=self.force, threads=self.threads

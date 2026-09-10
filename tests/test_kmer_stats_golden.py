@@ -125,13 +125,8 @@ def test_returns_output_path(matrix_file, tmp_path):
 
 
 def test_streaming_memory_bounded(tmp_path):
-    """The core Phase-1 property: peak allocations must scale with one chunk,
-    not with the whole file (the old code did `chunks = list(reader)`).
-
-    50,000 x 200 uint32 is ~40 MB fully materialized (double that transiently
-    for the old float64 conversion); one 2,000-row chunk is ~1.6 MB. The 12 MB
-    bound fails the old all-chunks-resident implementation with a wide margin
-    for parser buffers, while streaming stays comfortably below it.
+    """The peak allocations must scale with one chunk size. Chunks shouldn't
+    accumulate in memory.
     """
     rng = np.random.default_rng(0)
     counts = rng.poisson(lam=4.0, size=(50_000, 200)).astype(np.uint32)

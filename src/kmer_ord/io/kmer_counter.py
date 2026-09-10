@@ -29,6 +29,10 @@ def run_kmer_counter(input_file, output_tsv, kmer_length, num_threads,
                      script_name="kmer-counter", log_dir=None):
     """
     Run kmer-counter from TOOLS_ENV and produce TSV output with per-step benchmarking.
+
+    `log_dir` routes the nested BenchmarkTimers into the run's own
+    {output}/benchmarking/ directory (instead of the global default) so all
+    rows for one pipeline invocation land in the same benchmark_log.tsv.
     """
     import numpy as np
     from Bio import SeqIO
@@ -58,6 +62,9 @@ def run_kmer_counter(input_file, output_tsv, kmer_length, num_threads,
     # load numpy
     npy_file = temp_dir / "kmer_counts.npy"
     with BenchmarkTimer("Numpy_Loading", **timer_kw):
+        # mmap avoids materializing the on-disk dtype, but .astype still
+        # copies the full matrix into RAM as uint32 — that copy is the
+        # expected peak for this stage.
         kmer_data = np.load(npy_file, mmap_mode='r').astype(np.uint32)
         info(f"npy loaded uint32: {kmer_data.shape} {format_size(kmer_data.nbytes)}")
 

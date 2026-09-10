@@ -1,7 +1,8 @@
 """Tests for DR wrapper RAM changes: merge-from-disk, apply_pca skip, method isolation.
 
 UMAP hyperparameters are untouched. These tests cover the wrapper so a child
-segfault (the Ibex UMAP death) does not discard embeddings from other methods.
+crash (e.g. a UMAP segfault mid-run) does not discard embeddings from other
+methods.
 """
 import os
 
