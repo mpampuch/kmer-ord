@@ -9,9 +9,7 @@ def load_matrix(matrix_path: Path) -> pd.DataFrame:
     Returns pd.DataFrame of float32 with sample IDs as index.
 
     Numeric columns are parsed directly into float32 so the matrix exists in
-    RAM exactly once at its final dtype — the previous flow loaded as
-    int64/float64 and made a second float32 copy inside preprocess_data,
-    doubling peak memory for the largest object in the pipeline.
+    RAM exactly once at its final datatype.
     """
     import numpy as np
     matrix_path = Path(matrix_path)
@@ -23,6 +21,8 @@ def load_matrix(matrix_path: Path) -> pd.DataFrame:
 
     if suffix in [".tsv", ".csv"]:
         sep = "\t" if suffix == ".tsv" else ","
+        # peek at the header first: positional dtypes need the column count
+        # before read_csv can parse straight into float32
         with open(matrix_path) as f:
             num_columns = len(f.readline().rstrip("\n").split(sep))
 

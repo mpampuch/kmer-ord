@@ -1,7 +1,10 @@
 # tests/test_run_benchmarks.py
 """Tests for the standalone benchmark runner (benchmarks/run_benchmarks.py)."""
+import argparse
 import importlib.util
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RUNNER_PATH = REPO_ROOT / "benchmarks" / "run_benchmarks.py"
@@ -38,6 +41,21 @@ def test_synthetic_matrix_shape_and_dtype(tmp_path):
 
 def test_all_stages_registered():
     assert set(run_benchmarks.STAGES) == set(run_benchmarks.STAGE_NAMES)
+
+
+def test_full_tier_requires_explicit_matrix(tmp_path):
+    """--tier full has no private default path; the matrix must be supplied."""
+    args = argparse.Namespace(
+        tier="full",
+        full_matrix=None,
+        stages=None,
+        n_reads=10,
+        n_features=8,
+        seed=1,
+        log_dir=str(tmp_path),
+    )
+    with pytest.raises(SystemExit, match="--full-matrix"):
+        run_benchmarks.cmd_run(args)
 
 
 def test_run_stage_appends_to_explicit_log_dir(tmp_path):

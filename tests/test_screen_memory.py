@@ -1,5 +1,5 @@
 # tests/test_screen_memory.py
-"""Phase-3 regression test: the parameter screen must not accumulate
+"""Regression test to ensure the parameter screen must not accumulate
 sequence_id columns across grid combinations.
 
 Each combination's DataFrame used to be retained wholesale for the final

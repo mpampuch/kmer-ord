@@ -16,9 +16,12 @@ import pandas as pd
 
 from kmer_ord.utils.logging_utils import section, info
 
-# Refactored stats: the old names were misleading (`total_nonzero_kmers` was really the total count sum,
-# `shannon_evenness` was raw entropy in nats, `shannon_diversity` was entropy in bits).
-# `pielou_evenness` is now true Pielou evenness (H / ln S).
+# Output column glossary (renamed from earlier versions):
+#   total_kmer_counts     sum of all k-mer counts in the read
+#   num_nonzero_kmers     number of distinct k-mers observed
+#   shannon_entropy_nats  Shannon entropy H, natural log
+#   shannon_entropy_bits  Shannon entropy H, log base 2
+#   pielou_evenness       Pielou's J' = H / ln(S), true normalized evenness
 METRIC_COLUMNS = [
     "total_kmer_counts",
     "num_nonzero_kmers",

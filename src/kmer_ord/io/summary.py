@@ -5,6 +5,9 @@ Memory design: workers never `read()` a whole chunk. They iterate records in
 [start, end), write each TSV row immediately, and return only a compact
 lengths array plus Welford moments for GC. Peak RAM scales with one sequence
 (plus the lengths vector), not with the FASTA size times the worker count.
+The lengths vector is the one thing kept for the whole dataset because
+N50/N90 need the full sorted length distribution — O(n_seqs) int64, not
+O(FASTA bytes).
 """
 from pathlib import Path
 import shutil

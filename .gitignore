@@ -19,6 +19,7 @@ venv/
 # OS and editor junk
 .DS_Store
 .vscode/
+.cursorignore
 *.swp
 *.swo
 
@@ -36,10 +37,14 @@ coverage.xml
 *.out
 *.tmp
 
-# Generated benchmark datasets (the benchmark_log.tsv itself stays tracked
-# so peak-RAM results can be compared across commits)
+# Benchmark artifacts: synthetic datasets and the local results log
+# (benchmark_log.tsv contains machine-specific paths, so it is generated
+# per machine rather than tracked)
 benchmarks/data/
+benchmarks/benchmark_log.tsv
 
+# Local sequencing-read datasets and matrices derived from them; real read
+# data is far too large to track and test fixtures live under tests/ instead
 *reads*.tsv
 *reads*.fasta
 *reads*.fastq

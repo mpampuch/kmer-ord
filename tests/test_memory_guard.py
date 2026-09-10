@@ -1,10 +1,5 @@
 # tests/test_memory_guard.py
 """Tests for the per-method DR peak-memory estimator.
-
-The old guard was `X.nbytes * 4`, which ignores neighbor graphs and pair
-tables entirely — a `n_neighbors=200` UMAP or `FP_ratio=5` PaCMAP fit on a
-PCA-reduced matrix could OOM while passing the check. The estimator must
-account for the method-specific structures from the memory audit.
 """
 import pytest
 
@@ -51,5 +46,6 @@ def test_neighbor_count_scales_estimate():
 
 
 def test_unknown_method_falls_back_conservatively():
+    """Unlisted methods keep the old X.nbytes*4 floor so the guard never weakens."""
     est = estimate_peak_memory_gb(N_SEQ, N_FEAT, "kernel_pca", scale="default")
     assert est >= OLD_GUARD_GB  # at least as strict as the old heuristic

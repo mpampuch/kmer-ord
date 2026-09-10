@@ -51,6 +51,8 @@ _current_parent: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "benchmark_parent", default=None
 )
 
+# 50 ms balances sampling overhead against the risk of missing short-lived
+# allocation spikes; the stages being measured run for seconds to hours.
 _SAMPLE_INTERVAL_S = 0.05
 
 

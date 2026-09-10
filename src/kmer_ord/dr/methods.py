@@ -76,24 +76,26 @@ ALL_METHODS = ["umap", "tsne", "trimap", "pacmap", "localmap", "pca"]
 
 
 def estimate_peak_memory_gb(n_seq: int, n_feat: int, method: str, scale: str) -> float:
-    """Rough upper bound on peak RAM (GB) for one DR fit on an n_seq x n_feat
-    float32 matrix at the given (resolved) scale preset.
+    """
+    Estimate the peak RAM usage, in GB, for running one dimensionality-reduction method 
+    on an n_seq × n_feat float32 matrix at the given scale preset. 
 
-    Unlike the old `X.nbytes * 4` heuristic, this accounts for the structures
-    that actually dominate at scale (per the memory audit): sparse neighbor
-    graphs (UMAP), the sparse P-matrix over ~3*perplexity neighbors (t-SNE),
-    near/mid/far pair tables (PaCMAP/LocalMAP), triplet index arrays (TriMAP),
-    and sklearn's float64 working copy (PCA/t-SNE). Byte-per-entry constants
-    are deliberately generous — this is a guard, not a profiler.
+    The estimate includes the input matrix and method-specific temporary data structures 
+    that can significantly increase memory usage, such as sparse neighbor graphs, pair tables, 
+    triplet arrays, and some float64 working copies that may be created by some sklearn implementations. 
+
+    The per-entry memory estimates are intentionally conservative. This function is intended 
+    as a safety guard for deciding whether a job is likely to exceed available memory.
     """
     method = method.lower()
     params = DR_HYPERPARAMS.get(method, {}).get(scale, {})
     x_bytes = n_seq * n_feat * 4  # the float32 matrix held for the whole stage
 
     if method == "pca":
-        # sklearn PCA copies float32 input to a float64 workspace
+        # This assumes sklearn PCA copies float32 input to a float64 workspace. Might not be true anymore. Could be halved to 4 if need be.
         extra = n_seq * n_feat * 8
     elif method == "tsne":
+        # This assumes sklearn t-SNE copies float32 input to a float64 workspace. Might not be true anymore. Could be halved to 4 if need be as well.
         # float64 copy + sparse P-matrix over ~3*perplexity neighbors/point
         # (~16 bytes per stored entry: value + index + sparse overhead)
         perplexity = params.get("perplexity", 30)
@@ -123,9 +125,8 @@ def estimate_peak_memory_gb(n_seq: int, n_feat: int, method: str, scale: str) ->
     return (x_bytes + extra) / (1024 ** 3)
 
 
-# 2 GiB: above a typical --pca-pre matrix, well below the 10M × 2080 (~83 GB)
-# case that OOM-killed Ibex before any embedding was written.
-_HUGE_X_BYTES = 2 * 1024 ** 3
+# Here using 8 GiB as the threshold for warning about large matrices.
+_HUGE_X_BYTES = 8 * 1024 ** 3
 
 
 def _warn_if_huge_matrix(n_seq: int, n_feat: int, nbytes: int) -> None:
@@ -133,14 +134,14 @@ def _warn_if_huge_matrix(n_seq: int, n_feat: int, nbytes: int) -> None:
         gb = nbytes / (1024 ** 3)
         warn(
             f"input matrix is {gb:.1f} GB ({n_seq:,} × {n_feat:,}); "
-            "consider --pca-pre --keep-pcs 50 to shrink it before DR"
+            "consider --pca-pre --keep-pcs 100 to shrink it before DR"
         )
 
 
+# Disables TriMAP/PaCMAP/LocalMAP's internal PCA-to-100 when input is already. Maybe worth keeping or removing.
 def _maybe_disable_internal_pca(params: dict, n_feat: int) -> dict:
     """Skip TriMAP/PaCMAP/LocalMAP's internal PCA-to-100 when input is already
-    ≤100-d (e.g. after --pca-pre --keep-pcs 100). Result-identical, avoids a
-    redundant float64 copy of X.
+    ≤100-d (e.g. after --pca-pre --keep-pcs 100).
     """
     kwargs = dict(params)
     if n_feat <= 100:
@@ -186,9 +187,6 @@ def _run_single_method(
     except ImportError:
         umap = None
 
-    #from trimap import TRIMAP
-    #from pacmap import PaCMAP
-    #from pacmap.pacmap import LocalMAP
     method = method.lower()
     params = DR_HYPERPARAMS.get(method, {}).get(scale, {})
     n_feat = X.shape[1]
@@ -362,19 +360,24 @@ def _run_one_method_and_save(
 def _fit_one_method_worker(payload: dict) -> dict:
     """Child process: load matrix from disk, fit one method, write TSV, exit.
 
-    Loading from a path (not a pickled array) keeps the parent from holding X
-    during the fit. A fresh process per method actually returns RSS to the OS.
+    Loading from a path keeps the parent from holding the entire matrix X
+    in RAM during the fit. A fresh process per method actually returns RSS to the OS.
 
-    KMER_ORD_DR_FAIL_METHOD is a test hook: spawned workers re-import this
-    module, so a parent monkeypatch cannot inject a crash.
+    KMER_ORD_DR_FAIL_METHOD is a test hook used to intentionally fail a selected
+    DR method. This is done because now the DR methods run in a fresh Python sessions,
+    so this is a way to control it from the parent.
     """
     import os
 
     method = payload["method"]
     fail = os.environ.get("KMER_ORD_DR_FAIL_METHOD")
     if fail and fail == method:
+        # os._exit skips exception handling, simulating a native crash
+        # (segfault / OOM kill) rather than a catchable Python error.
         os._exit(1)
 
+    # np.load without mmap: the worker owns a real in-RAM array for the fit,
+    # so page faults during iteration can't stall the DR library.
     X = np.load(payload["matrix_path"])
     sequence_ids = np.load(payload["seqid_path"])
     tsv, graph = _run_one_method_and_save(

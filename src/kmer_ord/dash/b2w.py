@@ -346,6 +346,8 @@ def _cluster_color_key(categories):
         colors = glasbey[:n]
         mode = "categorical"
     else:
+        # plt.get_cmap (here and below) instead of cm.get_cmap, which was
+        # removed in Matplotlib 3.9
         turbo = plt.get_cmap("turbo")
         colors = [
             matplotlib.colors.rgb2hex(turbo(i / max(n - 1, 1)))
@@ -419,7 +421,6 @@ def create_datashader_image(df, x_col, y_col,
         agg = cvs.points(df_ds, x='x', y='y', agg=ds.count())
         cmap = plt.get_cmap("plasma")
         img = tf.shade(agg, cmap=[matplotlib.colors.rgb2hex(cmap(i)) for i in range(cmap.N)], how='eq_hist')
-        #img = tf.shade(agg, cmap="fire", how='eq_hist')
     
     img = tf.spread(img, px=max(int(px_spread), 1))
     return img.to_pil()
