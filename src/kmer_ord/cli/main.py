@@ -17,10 +17,44 @@ app = typer.Typer(add_completion=False,
 
 app.add_typer(setup_app)
 
-# click.Choice (not a plain list) because Typer needs a click_type to parse the command line arguments.
-_DR_METHODS = click.Choice(["umap", "tsne", "pca", "trimap", "pacmap", "localmap"])
+# click.Choice treats the whole argv token as one value, so --dr umap,tsne
+# never reaches the .split(",") in the commands. Validate each token instead.
+_DR_METHOD_NAMES = ("umap", "tsne", "pca", "trimap", "pacmap", "localmap", "all")
+
+
+class CommaSeparatedDrMethods(click.ParamType):
+    """One DR method, a comma-separated list, or 'all'."""
+
+    name = "dr_methods"
+
+    def __init__(self, choices):
+        self._choice = click.Choice(list(choices), case_sensitive=False)
+
+    def convert(self, value, param, ctx):
+        if value is None:
+            return value
+        text = str(value)
+        parts = [part.strip() for part in text.split(",")]
+        if not parts or any(part == "" for part in parts):
+            allowed = ", ".join(repr(name) for name in self._choice.choices)
+            self.fail(
+                f"'{value}' must be one or more of {allowed}, separated by commas",
+                param,
+                ctx,
+            )
+        for part in parts:
+            self._choice.convert(part, param, ctx)
+        # Callers still split this string themselves.
+        return text
+
+    def get_metavar(self, param, ctx=None):
+        return "METHOD[,METHOD,...]"
+
+
+_DR_METHODS = CommaSeparatedDrMethods(_DR_METHOD_NAMES)
 _DR_METHOD_HELP = (
-    "Dimensionality reduction method: 'umap', 'tsne', 'pca', 'trimap', 'pacmap', 'localmap'"
+    "Dimensionality reduction method, a comma-separated list, or 'all': "
+    "'umap', 'tsne', 'pca', 'trimap', 'pacmap', 'localmap'"
 )
 _PCA_PRE_METHODS = click.Choice(["pca", "ipca"])
 _PCA_PRE_METHOD_HELP = (
@@ -151,7 +185,9 @@ def run_pipeline(
     threads: int = typer.Option(4, "-t","--threads", help="Number of threads"),
 
     # --- DR options ---
-    dr_methods: str = typer.Option("umap","--dr", click_type=_DR_METHODS, help=_DR_METHOD_HELP),
+    dr_methods: str = typer.Option(
+        "umap", "--dr", click_type=_DR_METHODS, metavar="METHOD[,METHOD,...]", help=_DR_METHOD_HELP
+    ),
     scale: str = typer.Option("auto", "-s","--scale", help="Dataset scale presets for DR hyperparameters (auto, small, medium, large, default)"),
     normalisation: str = typer.Option("clr", "--norm", help="Normalization method (raw, relative, log, clr, zscore)"),
     dims: int = typer.Option(2, "-d","--dims", help="Embedding dimensions"),
@@ -259,7 +295,9 @@ def discover_pipeline(
     output_dir: Path = typer.Option(..., "-o", "--output", help="Output directory"),
     kmer_length: int = typer.Option(6, "-k", "--kmer"),
     dims: int = typer.Option(15, "-d", "--dims", help="High-dimensional embedding size"),
-    dr_method: str = typer.Option("umap", "--dr", click_type=_DR_METHODS, help=_DR_METHOD_HELP),
+    dr_method: str = typer.Option(
+        "umap", "--dr", click_type=_DR_METHODS, metavar="METHOD[,METHOD,...]", help=_DR_METHOD_HELP
+    ),
     scale: str = typer.Option("auto", "-s","--scale", help="Dataset scale presets for DR hyperparameters (auto, small, medium, large, default)"),
     normalisation: str = typer.Option("clr", "--norm", help="Normalization method (raw, relative, log, clr, zscore)"),
     pca_pre: bool = typer.Option(False, "--pca-pre", help="Apply PCA before DR"),
@@ -648,7 +686,9 @@ def kmer_metrics_cmd(
 def dr_cmd(
     input: Path = typer.Option(..., "-i","--input", help="Input k-mer matrix tsv"),
     output_dir: Path = typer.Option(..., "-o","--output", help="Output directory"),
-    methods: str = typer.Option(..., "-m","--methods", help="Comma-separated DR methods"),
+    methods: str = typer.Option(
+        ..., "-m", "--methods", click_type=_DR_METHODS, metavar="METHOD[,METHOD,...]", help=_DR_METHOD_HELP
+    ),
     scale: str = typer.Option("auto", "-s","--scale", help="Dataset scale presets for DR hyperparameters (auto, small, medium, large, default)"),
     normalisation: str = typer.Option("clr", "--norm", help="Normalization method"),
     dims: int = typer.Option(2,"-d", "--dims", help="Embedding dimensions"),
