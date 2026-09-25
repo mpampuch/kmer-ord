@@ -183,6 +183,8 @@ def process_kmer_file(
 
     entropy_stats = RunningStats()
     nonzero_stats = RunningStats()
+    count_stats = RunningStats()
+    evenness_stats = RunningStats()
 
     first_chunk = True
 
@@ -204,6 +206,14 @@ def process_kmer_file(
 
         nonzero_stats.update(
             metrics["num_nonzero_kmers"].to_numpy()
+        )
+
+        count_stats.update(
+            metrics["total_kmer_counts"].to_numpy()
+        )
+
+        evenness_stats.update(
+            metrics["pielou_evenness"].to_numpy()
         )
 
     if cpus <= 1:
@@ -232,7 +242,31 @@ def process_kmer_file(
                 write_metrics(in_flight.popleft().result())
 
     # Dataset-wide summary from the running accumulators
-    w = 20
+    w = 24
+
+    info(
+        f"{'total kmer counts':<{w}}  "
+        f"{'mean':<4} {count_stats.mean:8.1f}  "
+        f"{'sd':<3} {count_stats.std(ddof=1):8.1f}"
+    )
+
+    info(
+        f"{'total kmer counts range':<{w}}  "
+        f"{'min':<4} {count_stats.min:8.0f}  "
+        f"{'max':<3} {count_stats.max:8.0f}"
+    )
+
+    info(
+        f"{'nonzero kmers':<{w}}  "
+        f"{'mean':<4} {nonzero_stats.mean:8.1f}  "
+        f"{'sd':<3} {nonzero_stats.std(ddof=1):8.1f}"
+    )
+
+    info(
+        f"{'nonzero kmers range':<{w}}  "
+        f"{'min':<4} {nonzero_stats.min:8.0f}  "
+        f"{'max':<3} {nonzero_stats.max:8.0f}"
+    )
 
     info(
         f"{'shannon entropy':<{w}}  "
@@ -247,15 +281,15 @@ def process_kmer_file(
     )
 
     info(
-        f"{'nonzero kmers':<{w}}  "
-        f"{'mean':<4} {nonzero_stats.mean:8.1f}  "
-        f"{'sd':<3} {nonzero_stats.std(ddof=1):8.1f}"
+        f"{'pielou evenness':<{w}}  "
+        f"{'mean':<4} {evenness_stats.mean:8.3f}  "
+        f"{'sd':<3} {evenness_stats.std(ddof=1):8.3f}"
     )
 
     info(
-        f"{'nonzero kmers range':<{w}}  "
-        f"{'min':<4} {nonzero_stats.min:8.0f}  "
-        f"{'max':<3} {nonzero_stats.max:8.0f}"
+        f"{'pielou evenness range':<{w}}  "
+        f"{'min':<4} {evenness_stats.min:8.3f}  "
+        f"{'max':<3} {evenness_stats.max:8.3f}"
     )
 
     return Path(output_file)
