@@ -8,7 +8,7 @@ import datetime
 
 from kmer_ord.workflow.context import Context
 from kmer_ord.workflow.runner import Runner
-from kmer_ord.utils.logging_utils import section, info, warn, console
+from kmer_ord.utils.logging_utils import section, info, warn, console, enable_run_log
 from kmer_ord.cli.setup import setup_app
 from kmer_ord.utils.threading import set_global_threads
 
@@ -220,6 +220,7 @@ def run_pipeline(
     """
     _validate_pca_pre_flags(pca_pre, keep_pcs, keep_variance)
     start_time = datetime.datetime.now()
+    enable_run_log(output_dir / "kmer-ord.log")
     print_header(start_time)
     set_global_threads(threads)
 
@@ -329,6 +330,7 @@ def discover_pipeline(
     """
     _validate_pca_pre_flags(pca_pre, keep_pcs, keep_variance)
     start_time = datetime.datetime.now()
+    enable_run_log(output_dir / "kmer-ord.log")
     print_header(start_time)
 
     section("Starting kmer-ord clustering pipeline...")
@@ -586,6 +588,7 @@ def run_binner(
     """
     Launch interactive Dash app for binning sequences.
     """
+    enable_run_log(output_dir / "kmer-ord.log")
     from kmer_ord.dash.b2w import run_dash_app
 
     run_dash_app(
@@ -608,6 +611,7 @@ def fastq_to_fasta_cmd(
     """
     Convert fastq (or fastq.gz) to fasta. Uses seqkit by default; --biopython for legacy fallback.
     """
+    enable_run_log(output.parent / "kmer-ord.log")
     if output.exists() and not force:
         info(f"Skipping conversion, FASTA already exists: {output}")
         return
@@ -630,6 +634,7 @@ def fasta_stats_cmd(
     """
     Calculate per-sequence and overall statistics from a fasta file.
     """
+    enable_run_log(output_dir / "kmer-ord.log")
     from kmer_ord.io.summary import calculate_stats
 
     context = Context(input, output_dir, force=force)
@@ -648,6 +653,7 @@ def kmer_count_cmd(
     """
     Count k-mers for a fasta file and save tsv matrix.
     """
+    enable_run_log(output_dir / "kmer-ord.log")
     context = Context(input, output_dir, force=force, threads=threads)
     from kmer_ord.workflow.operations import KmerCount
 
@@ -672,6 +678,7 @@ def kmer_metrics_cmd(
     """
     Compute per-sequence k-mer metrics (Shannon diversity, unique k-mers, etc.).
     """
+    enable_run_log(output_dir / "kmer-ord.log")
     from kmer_ord.workflow.operations import KmerMetrics
 
     context = Context(input, output_dir, force=force)
@@ -709,6 +716,7 @@ def dr_cmd(
     """
     Run dimensionality reduction on an existing k-mer matrix.
     """
+    enable_run_log(output_dir / "kmer-ord.log")
     _validate_pca_pre_flags(pca_pre, keep_pcs, keep_variance)
     set_global_threads(threads)
     info(f"Using {threads} threads")
@@ -760,6 +768,7 @@ def cluster_pipeline(
     """
     Cluster sequences using existing embedding.
     """
+    enable_run_log(output_dir / "kmer-ord.log")
 
     from kmer_ord.workflow.operations import (Clustering, SpatialiteDatabase)
 
@@ -783,6 +792,7 @@ def run_tiara_cmd(
     """
     Run Tiara classification on a fasta file.
     """
+    enable_run_log(output_dir / "kmer-ord.log")
     from kmer_ord.workflow.operations import Tiara
 
     context = Context(input, output_dir, force=force, threads=threads)
@@ -803,6 +813,7 @@ def run_rdna_cmd(
     """
     Run rDNA-miner (extract, assemble and classify rDNA reads) on a fasta file.
     """
+    enable_run_log(output_dir / "kmer-ord.log")
     from kmer_ord.workflow.operations import RDNAMiner
 
     context = Context(input, output_dir, force=force, threads=threads)
@@ -824,6 +835,7 @@ def build_database(
     """
     Build Spatialite database from available artifacts.
     """
+    enable_run_log(output_dir / "kmer-ord.log")
     from kmer_ord.workflow.operations import (FeatureMerge, SpatialiteDatabase)
 
     context = Context(input, output_dir, force=force)
