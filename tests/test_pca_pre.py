@@ -10,7 +10,11 @@ import pandas as pd
 import pytest
 from sklearn.decomposition import PCA
 
-from kmer_ord.dr.preprocess import preprocess_data, reduce_dimensions_with_pca
+from kmer_ord.dr.preprocess import (
+    preprocess_data,
+    reduce_dimensions_with_pca,
+    resolve_ipca_batch_size,
+)
 
 
 @pytest.fixture
@@ -97,6 +101,17 @@ def test_cli_pca_pre_requires_keep_flag(command, base_args):
     assert result.exit_code != 0
     message = result.output or str(result.exception)
     assert "--keep-pcs" in message and "--keep-variance" in message
+
+
+def test_resolve_ipca_batch_size_default_and_floor():
+    # None uses max(2048, 5 * components fitted).
+    assert resolve_ipca_batch_size(80, 20, keep_pcs=5, keep_variance=None, batch_size=None) == 2048
+    # an explicit batch already above the component count is kept
+    assert resolve_ipca_batch_size(80, 20, keep_pcs=5, keep_variance=None, batch_size=16) == 16
+    # sklearn requires batch >= components, so a too-small batch is raised
+    assert resolve_ipca_batch_size(1000, 800, keep_pcs=600, keep_variance=None, batch_size=100) == 600
+    # variance selection fits at most 500 components before choosing a cutoff
+    assert resolve_ipca_batch_size(2000, 2000, keep_pcs=None, keep_variance=0.9, batch_size=None) == max(2048, 5 * 500)
 
 
 def test_pca_ignores_batch_size(clr_matrix):

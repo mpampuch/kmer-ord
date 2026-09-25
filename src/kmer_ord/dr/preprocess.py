@@ -122,6 +122,44 @@ def _standard_pca(X, keep_pcs, keep_variance):
     return PCA(n_components=keep_pcs).fit_transform(X)
 
 
+def _ipca_fit_plan(
+    n_samples: int,
+    n_features: int,
+    keep_pcs: int | None,
+    batch_size: int | None,
+) -> tuple[int, int]:
+    """Components to fit, and the batch size sklearn will accept.
+
+    sklearn requires batch_size >= n_components. A missing batch size becomes
+    max(2048, 5 * components). Variance selection fits at most 500 components
+    before the threshold is applied; that cap does not depend on the threshold.
+    """
+    max_pcs = min(n_samples, n_features)
+    if keep_pcs is not None:
+        n_fit = min(keep_pcs, max_pcs)
+    else:
+        n_fit = min(500, max_pcs)
+    if batch_size is None:
+        batch_size = max(2048, 5 * n_fit)
+    return n_fit, max(batch_size, n_fit)
+
+
+def resolve_ipca_batch_size(
+    n_samples: int,
+    n_features: int,
+    keep_pcs: int | None,
+    keep_variance: float | None,
+    batch_size: int | None,
+) -> int:
+    """Batch size IncrementalPCA will actually use.
+
+    The variance threshold does not change the batch: variance selection
+    always fits at most 500 components first. See _ipca_fit_plan.
+    """
+    del keep_variance
+    return _ipca_fit_plan(n_samples, n_features, keep_pcs, batch_size)[1]
+
+
 def _incremental_pca(X, keep_pcs, keep_variance, batch_size):
     """
     Apply Incremental PCA to reduce X using either a fixed number of
@@ -134,21 +172,9 @@ def _incremental_pca(X, keep_pcs, keep_variance, batch_size):
     from sklearn.decomposition import IncrementalPCA
 
     n_samples, n_features = X.shape
-    # Can't have more PCs than the number of samples or features.
-    max_pcs = min(n_samples, n_features)
-
-    if keep_pcs is not None:
-        # Can't have more PCs than the number of samples or features, so use the smaller of the two.
-        n_fit = min(keep_pcs, max_pcs)
-    else:
-        # variance threshold needs the spectrum before choosing a count, so
-        # fit a capped number of components (500 chosen because it's far beyond 
-        # any realistic cumulative-variance cutoff).
-        n_fit = min(500, max_pcs)
-
-    if batch_size is None:
-        batch_size = max(2048, 5 * n_fit)
-    batch_size = max(batch_size, n_fit)  # sklearn requires batch >= components
+    n_fit, batch_size = _ipca_fit_plan(
+        n_samples, n_features, keep_pcs, batch_size
+    )
 
     ipca = IncrementalPCA(n_components=n_fit, batch_size=batch_size)
     ipca.fit(X)

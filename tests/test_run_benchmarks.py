@@ -82,3 +82,15 @@ def test_run_stage_appends_to_explicit_log_dir(tmp_path):
     assert rows[0]["script_name"] == "run_benchmarks"
     assert rows[0]["stage_label"] == "bench_small_preprocess_clr"
     assert rows[0]["parent_label"] == "N/A"
+
+
+def test_stage_peak_bytes_uses_pss_or_rss_sum():
+    """PSS is the stage peak when present. N/A means self RSS plus child RSS."""
+    row = {
+        "peak_pss_tree_bytes": "100",
+        "peak_rss_self_bytes": "40",
+        "peak_rss_children_bytes": "50",
+    }
+    assert run_benchmarks._stage_peak_bytes(row) == 100
+    row["peak_pss_tree_bytes"] = "N/A"
+    assert run_benchmarks._stage_peak_bytes(row) == 90

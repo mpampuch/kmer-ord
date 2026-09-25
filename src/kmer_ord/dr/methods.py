@@ -283,6 +283,7 @@ def _run_one_method_and_save(
     screen_grid,
     log_dir,
     script_name,
+    record_benchmark: bool = True,
 ) -> tuple[Path, Path | None]:
     """Fit one method, write its TSV (and graph if any). Used in-process and in the child."""
     import scipy.sparse as sparse
@@ -323,12 +324,8 @@ def _run_one_method_and_save(
         info(f"{'':>{m}}  {params_str}")
     t0 = time.perf_counter()
 
-    with _dr_timer(
-        label=f"dr_{normalisation}_{method}",
-        log_dir=log_dir,
-        script_name=script_name,
-    ):
-        embedding, graph = _run_single_method(
+    def _fit():
+        return _run_single_method(
             X=X,
             method=method,
             dims=dims,
@@ -336,6 +333,18 @@ def _run_one_method_and_save(
             scale=resolved_scale,
             n_jobs=n_jobs,
         )
+
+    # Isolated runs time the method in the parent, around the worker. The
+    # worker can be SIGKILL'd (OOM), and a timer inside it would never flush.
+    if record_benchmark:
+        with _dr_timer(
+            label=f"dr_{normalisation}_{method}",
+            log_dir=log_dir,
+            script_name=script_name,
+        ):
+            embedding, graph = _fit()
+    else:
+        embedding, graph = _fit()
 
     elapsed = time.perf_counter() - t0
 
@@ -399,6 +408,7 @@ def _fit_one_method_worker(payload: dict) -> dict:
         screen_grid=payload["screen_grid"],
         log_dir=payload["log_dir"],
         script_name=payload["script_name"],
+        record_benchmark=payload.get("record_benchmark", True),
     )
     return {"tsv": str(tsv), "graph": str(graph) if graph is not None else None}
 
@@ -512,11 +522,19 @@ def run_dr_methods(
     for method in methods:
         try:
             if isolate:
-                payload = {**common_payload, "method": method}
+                payload = {**common_payload, "method": method, "record_benchmark": False}
                 # A new executor per method so the worker process actually exits
                 # and returns RSS; a long-lived pool would keep numba heaps.
-                with ProcessPoolExecutor(max_workers=1) as executor:
-                    result = executor.submit(_fit_one_method_worker, payload).result()
+                # The timer lives in this process: a SIGKILL'd worker never
+                # runs its own finally block, so a failed method would
+                # otherwise leave no benchmark row.
+                with _dr_timer(
+                    label=f"dr_{normalisation}_{method}",
+                    log_dir=log_dir,
+                    script_name=script_name,
+                ):
+                    with ProcessPoolExecutor(max_workers=1) as executor:
+                        result = executor.submit(_fit_one_method_worker, payload).result()
                 embedding_paths.append(Path(result["tsv"]))
                 if result.get("graph"):
                     graph_paths.append(Path(result["graph"]))

@@ -85,6 +85,7 @@ from kmer_ord.dr.preprocess import (
     NORMALISATION_METHODS,
     preprocess_data,
     reduce_dimensions_with_pca,
+    resolve_ipca_batch_size,
 )
 from kmer_ord.dr.methods import run_dr_methods
 from kmer_ord.utils.logging_utils import section, info
@@ -163,7 +164,18 @@ class MatrixPreprocessing(Operation):
                 if self.keep_pcs is not None
                 else f"{self.keep_variance} variance"
             )
-            info(f"{'pca-pre':<{w}}  {self.pca_method}  (keep {pca_target})")
+            batch_note = ""
+            resolved_batch = self.pca_batch_size
+            if self.pca_method == "ipca":
+                resolved_batch = resolve_ipca_batch_size(
+                    matrix.shape[0],
+                    matrix.shape[1],
+                    self.keep_pcs,
+                    self.keep_variance,
+                    self.pca_batch_size,
+                )
+                batch_note = f", batch {resolved_batch:,}"
+            info(f"{'pca-pre':<{w}}  {self.pca_method}  (keep {pca_target}{batch_note})")
 
         for norm in normalisations:
             # -----------------------------
@@ -189,7 +201,7 @@ class MatrixPreprocessing(Operation):
                         input_args=(
                             f"method={self.pca_method}, keep_pcs={self.keep_pcs}, "
                             f"keep_variance={self.keep_variance}, "
-                            f"batch_size={self.pca_batch_size}"
+                            f"batch_size={resolved_batch}"
                         ),
                     ):
                         X = reduce_dimensions_with_pca(
@@ -806,8 +818,11 @@ class PlotFeatures(Operation):
         output_dir.mkdir(exist_ok=True, parents=True)
 
         # Currently only the 'features' table, can expand later
-        plot_numeric_distributions(db_path, "features", output_dir)
-        plot_categorical_vs_numeric(db_path, "features", output_dir, max_categories=self.max_categories)
+        with context.benchmark_timer(label=self.name, input_file=db_path):
+            plot_numeric_distributions(db_path, "features", output_dir)
+            plot_categorical_vs_numeric(
+                db_path, "features", output_dir, max_categories=self.max_categories
+            )
 
         context.register("plots", output_dir)
 
@@ -826,7 +841,12 @@ class PlotEmbeddings(Operation):
         db_path = context.get("database")
         output_dir = context.output_dir / "plots" / "embeddings"
         output_dir.mkdir(parents=True, exist_ok=True)
-        plot_embeddings_from_db(db_path=db_path, output_root=output_dir, mode=self.mode,)
+        with context.benchmark_timer(
+            label=self.name,
+            input_file=db_path,
+            input_args=f"mode={self.mode}",
+        ):
+            plot_embeddings_from_db(db_path=db_path, output_root=output_dir, mode=self.mode)
 
         context.register("embedding_plots", output_dir)
 
