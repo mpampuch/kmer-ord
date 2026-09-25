@@ -435,7 +435,7 @@ def visualise_db(
     from kmer_ord.workflow.operations import PlotFeatures, PlotEmbeddings
     from kmer_ord.workflow.context import DBContext
 
-    ctx = DBContext(db_path)
+    ctx = DBContext(db_path, script_name="visualise")
 
     if features:
         section("Generating feature plots")

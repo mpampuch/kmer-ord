@@ -13,10 +13,24 @@ import time
 import numpy as np
 import psutil
 
-from kmer_ord.utils.benchmark import BenchmarkTimer, LOG_COLUMNS
+from kmer_ord.utils.benchmark import BenchmarkTimer, LOG_COLUMNS, format_bytes
 
 # Big enough to stand out over sampler noise, small enough to be fast.
 ALLOC_BYTES = 300 * 1024 * 1024  # 300 MiB
+
+
+def test_format_bytes_scales_and_preserves_missing():
+    assert format_bytes(512) == "512 B"
+    assert format_bytes(1024) == "1.00 KB"
+    assert format_bytes(1024 ** 2) == "1.00 MB"
+    assert format_bytes(1024 ** 3) == "1.00 GB"
+    assert format_bytes(1024 ** 4) == "1.00 TB"
+    assert format_bytes(1024 ** 5) == "1.00 PB"
+    assert format_bytes("N/A") == "N/A"
+    assert format_bytes(None) == "N/A"
+    assert format_bytes("") == "N/A"
+
+
 # Peak detection tolerance: the allocation must be visible at >= 2/3 its size.
 MIN_DETECTED = ALLOC_BYTES * 2 // 3
 
@@ -89,8 +103,31 @@ def test_log_row_written_with_schema(tmp_path):
     assert float(record["wall_time_s"]) >= 0.1
     assert int(record["peak_rss_self_bytes"]) > 0
     assert int(record["end_rss_bytes"]) > 0
+    # real PSS on Linux with smaps_rollup; N/A where the kernel does not provide it
+    pss = record["peak_pss_tree_bytes"]
+    assert pss == "N/A" or int(pss) > 0
+    assert record["n_children_at_peak"] == "0"
+    assert record["status"] == "ok"
+    assert record["error"] == "N/A"
+    # absent on a laptop that is not inside a job cgroup; an int when one is
+    assert record["peak_cgroup_bytes"] == "N/A" or int(record["peak_cgroup_bytes"]) >= 0
     # git commit is best-effort but should resolve inside this repo
     assert record["git_commit"] not in ("", "N/A")
+
+    hr_file = tmp_path / "benchmark_hr_log.tsv"
+    assert hr_file.exists()
+    with open(hr_file) as f:
+        hr_rows = list(csv.reader(f, delimiter="\t"))
+    hr_header, hr_row = hr_rows[0], hr_rows[1]
+    assert hr_header == LOG_COLUMNS
+    hr_record = dict(zip(hr_header, hr_row))
+    assert hr_record["stage_label"] == record["stage_label"]
+    assert hr_record["parent_label"] == "N/A"
+    assert hr_record["error"] == "N/A"
+    assert hr_record["input_file_size_bytes"] == "N/A"
+    peak = hr_record["peak_rss_self_bytes"]
+    assert any(unit in peak for unit in ("MB", "GB", "TB"))
+    assert peak != record["peak_rss_self_bytes"]
 
 
 def test_old_format_log_rotated_not_corrupted(tmp_path):
@@ -150,6 +187,15 @@ def test_multiple_rows_append(tmp_path):
     assert len(rows) == 3  # header + 2 data rows
     assert rows[1][LOG_COLUMNS.index("stage_label")] == "run0"
     assert rows[2][LOG_COLUMNS.index("stage_label")] == "run1"
+
+    hr_file = tmp_path / "benchmark_hr_log.tsv"
+    with open(hr_file) as f:
+        hr_rows = list(csv.reader(f, delimiter="\t"))
+    assert len(hr_rows) == 3
+    assert hr_rows[0] == LOG_COLUMNS
+    label_idx = LOG_COLUMNS.index("stage_label")
+    assert hr_rows[1][label_idx] == "run0"
+    assert hr_rows[2][label_idx] == "run1"
 
 
 def test_nested_timers_record_parent_label(tmp_path):
@@ -226,3 +272,136 @@ def test_run_dr_methods_writes_parent_and_leaf_rows(tmp_path):
     parent = next(r for r in records if r["stage_label"] == "dimensionality_reduction_clr")
     assert leaf["parent_label"] == "dimensionality_reduction_clr"
     assert parent["parent_label"] == "N/A"
+    assert leaf["status"] == "ok"
+    assert parent["status"] == "ok"
+
+
+def test_parse_smaps_rollup_pss_kilobytes():
+    from kmer_ord.utils.benchmark import _parse_smaps_rollup_pss
+
+    text = "Rss:              2048 kB\nPss:               512 kB\nPss_Anon:          100 kB\n"
+    assert _parse_smaps_rollup_pss(text) == 512 * 1024
+    assert _parse_smaps_rollup_pss("Rss:  10 kB\n") is None
+
+
+def test_pss_tree_does_not_multiply_shared_child_rss(tmp_path, monkeypatch):
+    """A child whose pages are shared must not scale the tree total by its RSS.
+
+    smaps_rollup is Linux-only, so this stubs PSS as RSS/4 — the accounting
+    rule for a page shared by four processes. peak_rss_children still sees
+    the child's full RSS.
+    """
+    from kmer_ord.utils import benchmark as bm
+
+    def shared_pss(pid: int):
+        try:
+            return psutil.Process(pid).memory_info().rss // 4
+        except psutil.Error:
+            return None
+
+    monkeypatch.setattr(bm, "_pss_bytes", shared_pss)
+    child_code = (
+        "import numpy, time; "
+        f"a = numpy.ones({ALLOC_BYTES} // 8, dtype=numpy.float64); "
+        "time.sleep(1.5)"
+    )
+    with BenchmarkTimer(label="shared_child", log_dir=str(tmp_path)) as bt:
+        proc = subprocess.Popen([sys.executable, "-c", child_code])
+        try:
+            proc.wait(timeout=30)
+        finally:
+            proc.kill()
+
+    assert bt.peak_rss_children >= MIN_DETECTED
+    assert bt.n_children_at_peak >= 1
+    summed_rss = bt.peak_rss_self + bt.peak_rss_children
+    assert bt.peak_pss_tree < summed_rss // 2, (
+        f"peak_pss_tree={bt.peak_pss_tree} scaled with summed RSS {summed_rss}"
+    )
+    log_file = tmp_path / "benchmark_log.tsv"
+    with open(log_file) as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+    assert int(rows[-1]["peak_pss_tree_bytes"]) == bt.peak_pss_tree
+
+
+def test_missing_smaps_rollup_logs_pss_as_na(tmp_path, monkeypatch):
+    """Without smaps_rollup the PSS column stays empty. RSS is still logged."""
+    from kmer_ord.utils import benchmark as bm
+
+    monkeypatch.setattr(bm, "_pss_bytes", lambda pid: None)
+    with BenchmarkTimer(label="no_pss", log_dir=str(tmp_path)) as bt:
+        time.sleep(0.1)
+
+    assert bt.peak_pss_tree is None
+    log_file = tmp_path / "benchmark_log.tsv"
+    with open(log_file) as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+    assert rows[-1]["peak_pss_tree_bytes"] == "N/A"
+    assert int(rows[-1]["peak_rss_self_bytes"]) > 0
+
+
+def test_cgroup_peak_follows_usage_file(tmp_path, monkeypatch):
+    from kmer_ord.utils import benchmark as bm
+
+    usage = tmp_path / "memory.current"
+    usage.write_text("1000\n")
+    monkeypatch.setattr(bm, "_cgroup_usage_path", lambda: str(usage))
+
+    with BenchmarkTimer(label="cgroup", log_dir=str(tmp_path)) as bt:
+        time.sleep(0.15)
+        usage.write_text("8000\n")
+        time.sleep(0.2)
+        usage.write_text("3000\n")
+        time.sleep(0.15)
+
+    assert bt.peak_cgroup == 8000
+    log_file = tmp_path / "benchmark_log.tsv"
+    with open(log_file) as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+    assert rows[-1]["peak_cgroup_bytes"] == "8000"
+    assert rows[-1]["status"] == "ok"
+
+
+def test_failed_block_is_logged(tmp_path):
+    import pytest
+
+    with pytest.raises(RuntimeError, match="boom"):
+        with BenchmarkTimer(label="broken", log_dir=str(tmp_path)) as bt:
+            raise RuntimeError("boom")
+
+    assert bt.status == "failed"
+    assert bt.error == "RuntimeError: boom"
+    log_file = tmp_path / "benchmark_log.tsv"
+    with open(log_file) as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+    assert rows[-1]["stage_label"] == "broken"
+    assert rows[-1]["status"] == "failed"
+    assert rows[-1]["error"] == "RuntimeError: boom"
+
+
+def test_visualise_stages_write_benchmark_rows(tmp_path, monkeypatch):
+    from kmer_ord.workflow.context import DBContext
+    from kmer_ord.workflow.operations import PlotEmbeddings, PlotFeatures
+
+    db_path = tmp_path / "kmerord.sqlite"
+    db_path.write_text("")
+
+    import kmer_ord.vis.feature_plots as feature_plots
+    import kmer_ord.vis.embedding_plots as embedding_plots
+
+    monkeypatch.setattr(feature_plots, "plot_numeric_distributions", lambda *a, **k: None)
+    monkeypatch.setattr(feature_plots, "plot_categorical_vs_numeric", lambda *a, **k: None)
+    monkeypatch.setattr(embedding_plots, "plot_embeddings_from_db", lambda *a, **k: None)
+
+    ctx = DBContext(db_path, script_name="visualise")
+    PlotFeatures().run(ctx)
+    PlotEmbeddings(mode="density").run(ctx)
+
+    log_file = tmp_path / "benchmarking" / "benchmark_log.tsv"
+    with open(log_file) as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+    by_label = {row["stage_label"]: row for row in rows}
+    assert by_label["plot_features"]["script_name"] == "visualise"
+    assert by_label["plot_features"]["status"] == "ok"
+    assert by_label["plot_embeddings"]["script_name"] == "visualise"
+    assert by_label["plot_embeddings"]["input_args"] == "mode=density"

@@ -1,5 +1,6 @@
 # kmer-ord
-## A tool for pre-assembly deconvolution of complex genomic mixtures using dimensionality reduction of k-mer profiles 
+
+## A tool for pre-assembly deconvolution of complex genomic mixtures using dimensionality reduction of k-mer profiles
 
 This repository provides a reference-free workflow for deconvoluting long-read sequencing datasets prior to genome assembly. The approach uses k-mer frequency profiles combined with dimensionality-reduction (DR) methods to partition sequencing reads into genome-specific bins without relying on reference databases or trained models.
 
@@ -10,11 +11,12 @@ The resulting bins can be assembled independently (“bin-then-assemble”), ena
 Documentation and tutorials for kmer-ord https://fdboever.github.io/kmer-ord-docs/
 
 ## Overview
+
 ![Workflow overview](images/overview.png)
 
 ## Install
 
-### 1. Clone the repository 
+### 1. Clone the repository
 
 ```bash
 git clone <repo-url>
@@ -42,6 +44,7 @@ conda install -c conda-forge numpy pandas scikit-learn umap-learn pacmap numba l
 Tip: You can replace `conda` with `mamba` for faster installs.
 
 ### 3. Install the package
+
 First ensure you are inside the kmer-ord directory, and activated the conda environment
 
 For users
@@ -61,13 +64,13 @@ with `python benchmarks/run_benchmarks.py run --tier small`.
 
 ### 4. Set up external tools and databases
 
-Finally, use kmer-ord to set up internal environments for external tools and downloading rRNA databases (this can take a while, so consider grabbing yourself a coffee) 
+Finally, use kmer-ord to set up internal environments for external tools and downloading rRNA databases (this can take a while, so consider grabbing yourself a coffee)
 
 ```bash
 kmer-ord setup
 ```
 
-### 5. Verify installation 
+### 5. Verify installation
 
 ```bash
 kmer-ord --help
@@ -75,7 +78,7 @@ kmer-ord --help
 
 ## Usage
 
-Each `project` / `cluster` / `dr` run writes wall time and peak RAM per stage (and per inner step) to `{output}/benchmarking/benchmark_log.tsv`.
+Each `project` / `cluster` / `dr` run writes wall time and peak RAM per stage (and per inner step) to `{output}/benchmarking/benchmark_log.tsv` (raw bytes). A sibling, human readable file `{output}/benchmarking/benchmark_hr_log.tsv` mirrors that log with byte columns scaled to B/KB/MB/GB/TB/PB.
 
 Large-matrix recipe — PCA-pre with IncrementalPCA before DR:
 

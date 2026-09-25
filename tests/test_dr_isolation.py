@@ -126,6 +126,8 @@ def test_isolated_method_crash_does_not_abort_siblings(tmp_path, monkeypatch):
         matrix_path=matrix_path,
         seqid_path=seqid_path,
         isolate=True,
+        log_dir=str(tmp_path),
+        script_name="project",
     )
 
     assert merged.exists()
@@ -138,3 +140,13 @@ def test_isolated_method_crash_does_not_abort_siblings(tmp_path, monkeypatch):
     assert pca_tsv, "pca embedding TSV should have been written"
     assert not list(umap_tsv.glob("*_umap_2D.tsv"))
     assert os.environ.get("KMER_ORD_DR_FAIL_METHOD") == "umap"
+
+    import csv
+    log_file = tmp_path / "benchmark_log.tsv"
+    with open(log_file) as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+    by_label = {row["stage_label"]: row for row in rows}
+    assert by_label["dr_clr_umap"]["status"] == "failed"
+    assert "BrokenProcessPool" in by_label["dr_clr_umap"]["error"]
+    assert by_label["dr_clr_pca"]["status"] == "ok"
+    assert by_label["dr_clr_pca"]["error"] == "N/A"

@@ -222,10 +222,23 @@ def _fmt_bytes(n: float) -> str:
     return f"{n / (1024 ** 3):.2f} GB" if n >= 1024 ** 3 else f"{n / (1024 ** 2):.1f} MB"
 
 
+def _stage_peak_bytes(row: dict) -> int:
+    """Physical-RAM peak for a stage.
+
+    Prefer the simultaneous PSS tree total. When that column is N/A
+    (smaps_rollup was unavailable, or the log predates the column), use
+    self RSS plus child RSS.
+    """
+    pss = row.get("peak_pss_tree_bytes")
+    if pss not in (None, "", "N/A"):
+        return int(pss)
+    return int(row["peak_rss_self_bytes"]) + int(row["peak_rss_children_bytes"])
+
+
 def _print_latest_rows(log_file: Path, n: int):
     rows = _read_log(log_file)[-n:] if n > 0 else []
     for r in rows:
-        peak = int(r["peak_rss_self_bytes"]) + int(r["peak_rss_children_bytes"])
+        peak = _stage_peak_bytes(r)
         print(
             f"  {r['stage_label']:<32} peak {_fmt_bytes(peak):>10}   "
             f"wall {float(r['wall_time_s']):8.2f}s"
@@ -264,8 +277,8 @@ def cmd_compare(args):
     print("-" * 84)
     for stage in common:
         ra, rb = a_rows[stage], b_rows[stage]
-        peak_a = int(ra["peak_rss_self_bytes"]) + int(ra["peak_rss_children_bytes"])
-        peak_b = int(rb["peak_rss_self_bytes"]) + int(rb["peak_rss_children_bytes"])
+        peak_a = _stage_peak_bytes(ra)
+        peak_b = _stage_peak_bytes(rb)
         wall_a, wall_b = float(ra["wall_time_s"]), float(rb["wall_time_s"])
         peak_delta = (peak_b - peak_a) / peak_a * 100 if peak_a else 0.0
         wall_delta = (wall_b - wall_a) / wall_a * 100 if wall_a else 0.0
