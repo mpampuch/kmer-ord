@@ -302,6 +302,49 @@ class TestPlotParamScreenFeatures:
         assert list(output.rglob("*.png")) == []
 
 
+def test_density_grid_is_copied_next_to_feature_plots(tmp_path):
+    project, screen, _ = _screen_project(tmp_path, [
+        "reads_clr_umap_n5_min0.1_2D.tsv",
+    ], manifest_rows=[{
+        "filename": "reads_clr_umap_n5_min0.1_2D.tsv",
+        "axis1_name": "n_neighbors",
+        "axis1_value": 5,
+        "axis2_name": "min_dist",
+        "axis2_value": 0.1,
+    }])
+    source = screen / "umap_param_screen_density.png"
+    source.write_bytes(b"density-grid")
+    output = tmp_path / "plots" / "param_screen"
+
+    plot_param_screen_features(project / "kmerord.sqlite", output, mode="all")
+
+    copied = output / "clr" / "umap" / "umap_param_screen_density.png"
+    assert copied.read_bytes() == source.read_bytes()
+    assert (output / "clr" / "umap" / "umap_by_taxon.png").is_file()
+    # The screen directory keeps its own copy.
+    assert source.read_bytes() == b"density-grid"
+
+
+def test_density_mode_copies_the_grid_without_feature_plots(tmp_path):
+    project, screen, _ = _screen_project(tmp_path, [
+        "reads_clr_umap_n5_min0.1_2D.tsv",
+    ], manifest_rows=[{
+        "filename": "reads_clr_umap_n5_min0.1_2D.tsv",
+        "axis1_name": "n_neighbors",
+        "axis1_value": 5,
+        "axis2_name": "min_dist",
+        "axis2_value": 0.1,
+    }])
+    (screen / "umap_param_screen_density.png").write_bytes(b"density-grid")
+    output = tmp_path / "plots" / "param_screen"
+
+    plot_param_screen_features(project / "kmerord.sqlite", output, mode="density")
+
+    names = sorted(p.name for p in output.rglob("*.png"))
+    assert names == ["umap_param_screen_density.png"]
+    assert (output / "clr" / "umap" / "umap_param_screen_density.png").read_bytes() == b"density-grid"
+
+
 @pytest.mark.parametrize("mode", ["density"])
 def test_density_mode_does_not_annotate(tmp_path, mode):
     project, _, _ = _screen_project(tmp_path, [
