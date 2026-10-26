@@ -29,8 +29,9 @@ def setup(
     """
     from kmer_ord.system.env_manager import (TOOLS_ENV, TIARA_ENV, RDNA_ENV,
                                              env_exists, create_tools_env, create_rdna_env,
-                                             create_tiara_env, install_rust_tool, install_rdna_miner, install_rdna_miner_db,
+                                             create_tiara_env, install_rust_tool, install_rdna_miner,
                                              check_tool)
+    from kmer_ord.system.rdna_miner_db import install_rdna_miner_db
 
     print("-" * 70)
     section("Starting kmerord setup...")
