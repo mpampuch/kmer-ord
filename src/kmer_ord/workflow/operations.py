@@ -461,9 +461,14 @@ class RDNAMiner(Operation):
     requires = ["fasta"]
     produces = ["rdna"]
 
-    def __init__(self, threads=1, platform="auto"):
+    def __init__(self, threads=1, platform="auto", db_dir=None, rfam_db=None,
+                 pr2_db=None, silva_db=None):
         self.threads = threads
         self.platform = platform
+        self.db_dir = db_dir
+        self.rfam_db = rfam_db
+        self.pr2_db = pr2_db
+        self.silva_db = silva_db
 
     def run(self, context):
         input_fasta = context.get("fasta")
@@ -474,19 +479,38 @@ class RDNAMiner(Operation):
                                              suffix=".tsv")
         feature_file.parent.mkdir(parents=True, exist_ok=True)
 
+        input_args = f"threads={self.threads} platform={self.platform}"
+        if self.db_dir is not None:
+            input_args += f" db_dir={self.db_dir}"
+        if self.rfam_db is not None:
+            input_args += f" rfam_db={self.rfam_db}"
+        if self.pr2_db is not None:
+            input_args += f" pr2_db={self.pr2_db}"
+        if self.silva_db is not None:
+            input_args += f" silva_db={self.silva_db}"
+        if context.force:
+            input_args += " force=True"
+
         with context.benchmark_timer(
             label=self.name,
             input_file=input_fasta,
-            input_args=f"threads={self.threads} platform={self.platform}"):
+            input_args=input_args):
             if feature_file.exists() and not context.force:
                 typer.echo(f"Skipping rDNA-miner, output exists: {feature_file}")
                 context.logger.info(f"Skipping rDNA-miner, output exists: {feature_file}")
             else:
+                # context.force is kmer-ord's --force. Pass it through so
+                # rDNA-miner rebuilds cached steps under rdna/raw.
                 run_rdna_miner(input_file=input_fasta,
                                 output_dir=raw_dir,
                                 feature_file=feature_file,
                                 threads=self.threads,
-                                platform=self.platform)
+                                platform=self.platform,
+                                db_dir=self.db_dir,
+                                rfam_db=self.rfam_db,
+                                pr2_db=self.pr2_db,
+                                silva_db=self.silva_db,
+                                force=context.force)
 
         if feature_file.exists():
             context.register("rdna", feature_file)
