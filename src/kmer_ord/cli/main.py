@@ -65,6 +65,13 @@ _PCA_PRE_BATCH_SIZE_HELP = (
     "IncrementalPCA batch size (used only with --pca-pre-method ipca). "
     "Default: max(2048, 5 * n_components)."
 )
+_DR_ON_FAILURE = click.Choice(["continue", "abort"], case_sensitive=False)
+_DR_ON_FAILURE_HELP = (
+    "What to do when a DR method fails. "
+    "'continue' (default) skips that method and runs the rest; "
+    "the run still fails if every method fails. "
+    "'abort' stops the pipeline immediately and exits non-zero."
+)
 
 
 def _validate_pca_pre_flags(pca_pre: bool, keep_pcs, keep_variance) -> None:
@@ -202,6 +209,9 @@ def run_pipeline(
     screen_range1: List[str] = typer.Option([], "--screen_range1", help="Axis-1 range for auto-generated grids: 'method=min,max' or 'all=min,max'. Repeatable."),
     screen_range2: List[str] = typer.Option([], "--screen_range2", help="Axis-2 range for auto-generated grids: 'method=min,max'. Repeatable."),
     screen_grid: Optional[str] = typer.Option(None, "--screen_grid", help="Grid size for auto-generated screens: 'N' (1D) or 'NxM' (2D). Applies to every screened method."),
+    dr_on_failure: str = typer.Option(
+        "continue", "--dr-on-failure", click_type=_DR_ON_FAILURE, help=_DR_ON_FAILURE_HELP
+    ),
 
     # --- Tiara ---
     run_tiara: bool = typer.Option(False, "--tiara/--no-tiara", help="Run Tiara taxonomic classification and include results in the feature table (requires Tiara environment from kmer-ord setup)."),
@@ -279,7 +289,8 @@ def run_pipeline(
             screen_range1=screen_range1,
             screen_range2=screen_range2,
             screen_grid=screen_grid,
-            threads=threads,),
+            threads=threads,
+            on_failure=dr_on_failure,),
         FeatureMerge(),
         SpatialiteDatabase()]
 
@@ -312,6 +323,9 @@ def discover_pipeline(
     screen_range1: List[str] = typer.Option([], "--screen_range1", help="Axis-1 range for auto-generated grids: 'method=min,max' or 'all=min,max'. Repeatable."),
     screen_range2: List[str] = typer.Option([], "--screen_range2", help="Axis-2 range for auto-generated grids: 'method=min,max'. Repeatable."),
     screen_grid: Optional[str] = typer.Option(None, "--screen_grid", help="Grid size for auto-generated screens: 'N' (1D) or 'NxM' (2D). Applies to every screened method."),
+    dr_on_failure: str = typer.Option(
+        "continue", "--dr-on-failure", click_type=_DR_ON_FAILURE, help=_DR_ON_FAILURE_HELP
+    ),
 
     cluster_methods: str = typer.Option("hdbscan", "--cluster", help="Comma-separated clustering methods (leiden,hdbscan,dbscan)"),
     leiden_sweep: bool = typer.Option(False, "--leiden-sweep", help="Run Leiden resolution sweep"),
@@ -383,7 +397,8 @@ def discover_pipeline(
             screen_range1=screen_range1,
             screen_range2=screen_range2,
             screen_grid=screen_grid,
-            threads=threads,)]
+            threads=threads,
+            on_failure=dr_on_failure,)]
 
     # -----------------------------
     # Clustering operations
@@ -712,6 +727,9 @@ def dr_cmd(
     screen_range1: List[str] = typer.Option([], "--screen_range1", help="Axis-1 range for auto-generated grids: 'method=min,max' or 'all=min,max'. Repeatable."),
     screen_range2: List[str] = typer.Option([], "--screen_range2", help="Axis-2 range for auto-generated grids: 'method=min,max'. Repeatable."),
     screen_grid: Optional[str] = typer.Option(None, "--screen_grid", help="Grid size for auto-generated screens: 'N' (1D) or 'NxM' (2D). Applies to every screened method."),
+    dr_on_failure: str = typer.Option(
+        "continue", "--dr-on-failure", click_type=_DR_ON_FAILURE, help=_DR_ON_FAILURE_HELP
+    ),
     threads: int = typer.Option(4, "-t","--threads", help="Number of threads"),
 ):
     """
@@ -751,6 +769,7 @@ def dr_cmd(
             screen_range2=screen_range2,
             screen_grid=screen_grid,
             threads=threads,
+            on_failure=dr_on_failure,
         ),
     ]
 

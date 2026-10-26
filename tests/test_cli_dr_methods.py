@@ -62,6 +62,49 @@ def test_unknown_dr_method_is_rejected(command, flag):
     assert "is not one of" in message
 
 
+@pytest.mark.parametrize("command", ["project", "cluster", "dr"])
+def test_help_lists_dr_on_failure(command):
+    result = _runner.invoke(app, [command, "--help"])
+    assert result.exit_code == 0
+    assert "--dr-on-failure" in result.output
+
+
+@pytest.mark.parametrize("command", ["project", "cluster", "dr"])
+@pytest.mark.parametrize("value", ["abort", "ABORT"])
+def test_dr_on_failure_abort_passes_choice_parsing(tmp_path, command, value):
+    """The command may still fail because the input file is missing.
+
+    That failure must not be Click rejecting --dr-on-failure.
+    """
+    args = [
+        command,
+        "-i",
+        str(tmp_path / "missing.fa"),
+        "-o",
+        str(tmp_path / "out"),
+        "--dr-on-failure",
+        value,
+    ]
+    if command == "dr":
+        args.extend(["-m", "pca"])
+    result = _runner.invoke(app, args)
+    message = _message(result)
+    assert "is not one of" not in message
+    assert "Invalid value for '--dr-on-failure'" not in message
+
+
+@pytest.mark.parametrize("command", ["project", "cluster", "dr"])
+def test_unknown_dr_on_failure_is_rejected(command):
+    args = [command, "-i", "x.fa", "-o", "out", "--dr-on-failure", "nope"]
+    if command == "dr":
+        args.extend(["-m", "umap"])
+    result = _runner.invoke(app, args)
+    assert result.exit_code != 0
+    message = _message(result).lower()
+    assert "nope" in message
+    assert "is not one of" in message
+
+
 def test_project_help_shows_comma_separated_dr_metavar():
     # Rich truncates the metavar in the help table, so check the parameter
     # itself for the full token and the rendered help for the visible prefix.

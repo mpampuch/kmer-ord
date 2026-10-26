@@ -150,3 +150,50 @@ def test_isolated_method_crash_does_not_abort_siblings(tmp_path, monkeypatch):
     assert "BrokenProcessPool" in by_label["dr_clr_umap"]["error"]
     assert by_label["dr_clr_pca"]["status"] == "ok"
     assert by_label["dr_clr_pca"]["error"] == "N/A"
+
+
+def test_isolated_method_crash_aborts_before_siblings(tmp_path, monkeypatch):
+    """on_failure=abort stops on the first child death and does not start PCA."""
+    from concurrent.futures.process import BrokenProcessPool
+
+    rng = np.random.default_rng(0)
+    X = rng.normal(size=(40, 12)).astype(np.float32)
+    matrix_path = tmp_path / "X.npy"
+    seqid_path = tmp_path / "ids.npy"
+    np.save(matrix_path, X)
+    np.save(seqid_path, np.array([f"s{i}" for i in range(40)], dtype="U"))
+
+    monkeypatch.setenv("KMER_ORD_DR_FAIL_METHOD", "umap")
+
+    with pytest.raises(BrokenProcessPool):
+        run_dr_methods(
+            X=None,
+            methods=["umap", "pca"],
+            dims=2,
+            seed=0,
+            scale="small",
+            screen_params=False,
+            output_dir=tmp_path / "dr",
+            normalisation="clr",
+            input_name="test",
+            matrix_path=matrix_path,
+            seqid_path=seqid_path,
+            isolate=True,
+            log_dir=str(tmp_path),
+            script_name="project",
+            on_failure="abort",
+        )
+
+    merged = tmp_path / "dr" / "clr" / "test_clr_2D_merged_embeddings.tsv"
+    assert not merged.exists()
+    pca_tsv = list((tmp_path / "dr" / "clr" / "pca").glob("*_pca_2D.tsv"))
+    assert not pca_tsv
+
+    import csv
+    log_file = tmp_path / "benchmark_log.tsv"
+    with open(log_file) as f:
+        rows = list(csv.DictReader(f, delimiter="\t"))
+    by_label = {row["stage_label"]: row for row in rows}
+    assert by_label["dr_clr_umap"]["status"] == "failed"
+    assert "BrokenProcessPool" in by_label["dr_clr_umap"]["error"]
+    assert "dr_clr_pca" not in by_label
