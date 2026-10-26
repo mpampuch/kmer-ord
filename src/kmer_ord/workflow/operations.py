@@ -836,7 +836,10 @@ class PlotEmbeddings(Operation):
         self.mode = mode  # "density", "categorical", "continuous", "all"
 
     def run(self, context):
-        from kmer_ord.vis.embedding_plots import plot_embeddings_from_db
+        from kmer_ord.vis.embedding_plots import (
+            plot_embeddings_from_db,
+            plot_param_screen_features,
+        )
 
         db_path = context.get("database")
         output_dir = context.output_dir / "plots" / "embeddings"
@@ -848,22 +851,20 @@ class PlotEmbeddings(Operation):
         ):
             plot_embeddings_from_db(db_path=db_path, output_root=output_dir, mode=self.mode)
 
+        # Density grids are written during the screen itself. Feature colours
+        # need the database, so they are drawn here, and only when this run
+        # asked for categorical or continuous embeddings.
+        if self.mode in ("categorical", "continuous", "all"):
+            screen_output = context.output_dir / "plots" / "param_screen"
+            with context.benchmark_timer(
+                label="plot_param_screen",
+                input_file=db_path,
+                input_args=f"mode={self.mode}",
+            ):
+                plot_param_screen_features(
+                    db_path=db_path,
+                    output_root=screen_output,
+                    mode=self.mode,
+                )
+
         context.register("embedding_plots", output_dir)
-
-class PlotParamScreen(Operation):
-    name = "plot_param_screen"
-    produces = ["param_screen_plots"]
-
-    def __init__(self, screen_dir: Path, method: str):
-        self.screen_dir = screen_dir
-        self.method = method
-
-    def run(self, context):
-        from kmer_ord.vis.param_screen import plot_param_screen
-
-        output_dir = context.output_dir / "plots" / "param_screen"
-        output_dir.mkdir(parents=True, exist_ok=True)
-
-        plot_param_screen(self.screen_dir, self.method, output_dir)
-
-        context.register("param_screen_plots", output_dir)

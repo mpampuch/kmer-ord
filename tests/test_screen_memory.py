@@ -63,3 +63,16 @@ def test_screen_retains_only_coordinate_columns(tmp_path, monkeypatch):
     on_disk = pd.read_csv(out_paths[0], sep="\t")
     assert list(on_disk.columns) == ["sequence_id", "tsne_1", "tsne_2"]
     assert list(on_disk["sequence_id"]) == list(sequence_ids)
+
+    # The manifest is axis labels for visualise, not another copy of the points.
+    manifest = pd.read_csv(tmp_path / "manifest.tsv", sep="\t")
+    assert list(manifest.columns) == [
+        "filename", "axis1_name", "axis1_value", "axis2_name", "axis2_value",
+    ]
+    assert len(manifest) == 1
+    assert manifest.loc[0, "filename"] == out_paths[0].name
+    assert manifest.loc[0, "axis1_name"] == "perplexity"
+    assert manifest.loc[0, "axis1_value"] == 5
+    assert manifest.loc[0, "axis2_name"] == "learning_rate"
+    assert manifest.loc[0, "axis2_value"] == 100
+    assert "sequence_id" not in manifest.columns
