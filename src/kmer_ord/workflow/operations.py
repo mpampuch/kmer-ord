@@ -251,6 +251,7 @@ class DimensionalityReduction(Operation):
         screen_grid=None,
         max_memory_gb=None,
         threads=1,
+        on_failure="continue",
     ):
         self.methods = methods
         self.dims = dims
@@ -264,6 +265,7 @@ class DimensionalityReduction(Operation):
         self.screen_grid = screen_grid
         self.max_memory_gb = max_memory_gb
         self.threads = threads
+        self.on_failure = on_failure
 
     def run(self, context):
         import numpy as np
@@ -308,7 +310,7 @@ class DimensionalityReduction(Operation):
                 input_args=(
                     f"methods={','.join(self.methods)}, dims={self.dims}, "
                     f"scale={self.scale}, screen_params={self.screen_params}, "
-                    f"threads={self.threads}"
+                    f"threads={self.threads}, on_failure={self.on_failure}"
                 ),
             ) as bt:
                 with context.benchmark_timer(
@@ -372,10 +374,11 @@ class DimensionalityReduction(Operation):
                     matrix_path=matrix_path,
                     seqid_path=seqid_paths[i],
                     # isolate: each method fits in its own subprocess loading
-                    # from matrix_path, so the parent never holds X and a
-                    # crash in one method (e.g. a UMAP segfault) skips only
-                    # that method — later methods still write embeddings.
+                    # from matrix_path, so the parent never holds X. A crash
+                    # in one method (e.g. a UMAP segfault) is handled by
+                    # on_failure: continue skips it, abort stops the run.
                     isolate=True,
+                    on_failure=self.on_failure,
                 )
 
             merged_outputs.append(merged_file)

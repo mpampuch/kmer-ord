@@ -435,6 +435,7 @@ def run_dr_methods(
     matrix_path: Path | str | None = None,
     seqid_path: Path | str | None = None,
     isolate: bool = False,
+    on_failure: str = "continue",
 ) -> tuple[Path, list[Path]]:
     """
     Run selected DR methods for a single normalisation.
@@ -443,8 +444,9 @@ def run_dr_methods(
     Saves graph objects if produced by a method.
 
     When isolate=True the parent must not hold X: each method runs in a fresh
-    process that np.loads matrix_path. A child death skips that method and
-    continues so later methods (e.g. PCA after a UMAP segfault) still write.
+    process that np.loads matrix_path. A child death (e.g. a UMAP segfault)
+    is caught here. on_failure="continue" (default) skips that method so later
+    ones still write. on_failure="abort" re-raises and stops the run.
 
     Returns
     -------
@@ -454,6 +456,12 @@ def run_dr_methods(
         List of graph files saved (may be empty)
     """
     from concurrent.futures import ProcessPoolExecutor
+
+    on_failure = str(on_failure).lower()
+    if on_failure not in {"continue", "abort"}:
+        raise ValueError(
+            f"on_failure must be 'continue' or 'abort', got {on_failure!r}"
+        )
 
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -493,6 +501,7 @@ def run_dr_methods(
         info(f"{'threads':<{w}}  {n_jobs}")
     if isolate:
         info(f"{'isolate':<{w}}  per-method subprocess")
+    info(f"{'on failure':<{w}}  {on_failure}")
 
     divider()
 
@@ -563,6 +572,12 @@ def run_dr_methods(
                 if graph_file is not None:
                     graph_paths.append(graph_file)
         except Exception as exc:
+            if on_failure == "abort":
+                warn(
+                    f"{method} failed ({type(exc).__name__}: {exc}); "
+                    "stopping the run"
+                )
+                raise
             warn(f"{method} failed ({type(exc).__name__}: {exc}); skipping")
             divider()
             continue
