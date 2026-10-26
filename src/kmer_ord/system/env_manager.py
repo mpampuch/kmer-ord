@@ -173,20 +173,57 @@ def create_rdna_env(name: str = RDNA_ENV, recreate: bool = False):
 
     return tmp_dir  # important for next step
 
-def install_rdna_miner_db(env: str = RDNA_ENV):
+RDNA_DB_CHOICES = ("rfam", "silva", "pr2", "all")
+
+
+def _rdna_miner_cmd(env: str, args: list[str], db_dir: Path | None = None, force: bool = False) -> list[str]:
+    """Build a `conda run rdna-miner ...` command.
+
+    --no-capture-output lets download progress reach the terminal. conda
+    buffers output until the command exits otherwise.
+    """
+    cmd = ["conda", "run", "--no-capture-output", "-n", env, "rdna-miner", *args]
+    if db_dir is not None:
+        cmd.extend(["--db-dir", str(db_dir)])
+    if force:
+        cmd.append("--force")
+    return cmd
+
+
+def install_rdna_miner_db(
+    env: str = RDNA_ENV,
+    db: str = "all",
+    db_dir: Path | None = None,
+    force: bool = False,
+):
     """
     Install rDNA-miner databases inside its environment.
-    Equivalent to: `rdna-miner db install all`
+    Equivalent to: `rdna-miner db install <db> [--db-dir PATH] [--force]`
+
+    Raises CalledProcessError when the install fails so callers exit non-zero.
     """
-    info("Installing rDNA-miner databases...")
-    try:
-        subprocess.run(
-            ["conda", "run", "-n", env, "rdna-miner", "db", "install", "all"],
-            check=True
+    if db not in RDNA_DB_CHOICES:
+        raise ValueError(
+            f"Unknown rDNA-miner database: {db!r}. "
+            f"Choose from {', '.join(RDNA_DB_CHOICES)}."
         )
-        info("rDNA-miner databases installed successfully.")
+    info(f"Installing rDNA-miner database '{db}'...")
+    cmd = _rdna_miner_cmd(env, ["db", "install", db], db_dir=db_dir, force=force)
+    try:
+        subprocess.run(cmd, check=True)
     except subprocess.CalledProcessError as e:
         warn(f"Failed to install rDNA-miner databases: {e}")
+        raise
+    info("rDNA-miner databases installed successfully.")
+
+
+def rdna_miner_db_status(env: str = RDNA_ENV, db_dir: Path | None = None):
+    """
+    Show which rDNA-miner databases are installed.
+    Equivalent to: `rdna-miner db status [--db-dir PATH]`
+    """
+    cmd = _rdna_miner_cmd(env, ["db", "status"], db_dir=db_dir)
+    subprocess.run(cmd, check=True)
 
 
 #------------------------------

@@ -10,12 +10,14 @@ from kmer_ord.workflow.context import Context
 from kmer_ord.workflow.runner import Runner
 from kmer_ord.utils.logging_utils import section, info, warn, console, enable_run_log
 from kmer_ord.cli.setup import setup_app
+from kmer_ord.cli.rdna_db import rdna_db_app
 from kmer_ord.utils.threading import set_global_threads
 
 app = typer.Typer(add_completion=False,
                   context_settings={"help_option_names": ["-h", "--help"]})
 
 app.add_typer(setup_app)
+app.add_typer(rdna_db_app, name="rdna-db", rich_help_panel="Installation")
 
 # click.Choice treats the whole argv token as one value, so --dr umap,tsne
 # never reaches the .split(",") in the commands. Validate each token instead.
@@ -72,6 +74,18 @@ _DR_ON_FAILURE_HELP = (
     "the run still fails if every method fails. "
     "'abort' stops the pipeline immediately and exits non-zero."
 )
+
+
+def _existing_rdna_dir(flag: str, help_text: str):
+    """Directory option that must already exist. Checked before conda runs."""
+    return typer.Option(
+        None,
+        flag,
+        exists=True,
+        file_okay=False,
+        dir_okay=True,
+        help=help_text,
+    )
 
 
 def _validate_pca_pre_flags(pca_pre: bool, keep_pcs, keep_variance) -> None:
@@ -219,6 +233,22 @@ def run_pipeline(
     # --- rDNA-miner ---
     run_rdna: bool = typer.Option(False, "--rDNA/--no-rDNA", help="Run rDNA-miner (extract, assemble and classify rDNA reads) and include per-read taxonomy in the feature table (requires rDNA-miner environment from kmer-ord setup)."),
     rdna_platform: str = typer.Option("auto", "--rdna-platform", help="Sequencing platform for rDNA-miner (auto, ont, pacbio)"),
+    rdna_db_dir: Optional[Path] = _existing_rdna_dir(
+        "--rdna-db-dir",
+        "rDNA-miner database directory (contains rfam/, pr2/, and silva/). Passed as rdna-miner --db-dir.",
+    ),
+    rdna_rfam_db: Optional[Path] = _existing_rdna_dir(
+        "--rdna-rfam-db",
+        "Override path to the Rfam database directory.",
+    ),
+    rdna_pr2_db: Optional[Path] = _existing_rdna_dir(
+        "--rdna-pr2-db",
+        "Override path to the PR2 database directory.",
+    ),
+    rdna_silva_db: Optional[Path] = _existing_rdna_dir(
+        "--rdna-silva-db",
+        "Override path to the SILVA database directory.",
+    ),
 ):
     """
     [+] Projection pipeline:
@@ -266,9 +296,30 @@ def run_pipeline(
 
     if run_rdna:
         info("rDNA-miner classification enabled.")
-        operations.append(RDNAMiner(threads=threads, platform=rdna_platform))
+        operations.append(RDNAMiner(
+            threads=threads,
+            platform=rdna_platform,
+            db_dir=rdna_db_dir,
+            rfam_db=rdna_rfam_db,
+            pr2_db=rdna_pr2_db,
+            silva_db=rdna_silva_db,
+        ))
     else:
         info("rDNA-miner classification skipped (pass --rDNA to enable).")
+        unused_rdna_flags = [
+            name for name, value in (
+                ("--rdna-db-dir", rdna_db_dir),
+                ("--rdna-rfam-db", rdna_rfam_db),
+                ("--rdna-pr2-db", rdna_pr2_db),
+                ("--rdna-silva-db", rdna_silva_db),
+            ) if value is not None
+        ]
+        if unused_rdna_flags:
+            warn(
+                "rDNA database options "
+                f"({', '.join(unused_rdna_flags)}) apply only when --rDNA is enabled. "
+                "rDNA-miner will not run."
+            )
 
     operations += [
         MatrixPreprocessing(
@@ -829,7 +880,23 @@ def run_rdna_cmd(
     output_dir: Path = typer.Option(..., "-o","--output", help="Output directory"),
     threads: int = typer.Option(1, "-t", help="Number of threads"),
     platform: str = typer.Option("auto", "-p", "--platform", help="Sequencing platform (auto, ont, pacbio)"),
-    force: bool = typer.Option(False, "-f", "--force", help="Recompute even if output exists"),):
+    force: bool = typer.Option(False, "-f", "--force", help="Recompute even if output exists"),
+    rdna_db_dir: Optional[Path] = _existing_rdna_dir(
+        "--rdna-db-dir",
+        "rDNA-miner database directory (contains rfam/, pr2/, and silva/). Passed as rdna-miner --db-dir.",
+    ),
+    rdna_rfam_db: Optional[Path] = _existing_rdna_dir(
+        "--rdna-rfam-db",
+        "Override path to the Rfam database directory.",
+    ),
+    rdna_pr2_db: Optional[Path] = _existing_rdna_dir(
+        "--rdna-pr2-db",
+        "Override path to the PR2 database directory.",
+    ),
+    rdna_silva_db: Optional[Path] = _existing_rdna_dir(
+        "--rdna-silva-db",
+        "Override path to the SILVA database directory.",
+    ),):
     """
     Run rDNA-miner (extract, assemble and classify rDNA reads) on a fasta file.
     """
@@ -838,7 +905,14 @@ def run_rdna_cmd(
 
     context = Context(input, output_dir, force=force, threads=threads)
 
-    operation = RDNAMiner(threads=threads, platform=platform)
+    operation = RDNAMiner(
+        threads=threads,
+        platform=platform,
+        db_dir=rdna_db_dir,
+        rfam_db=rdna_rfam_db,
+        pr2_db=rdna_pr2_db,
+        silva_db=rdna_silva_db,
+    )
     operation.run(context)
 
     if context.exists("rdna"):

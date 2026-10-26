@@ -1,4 +1,7 @@
 # src/kmer_ord/cli/setup.py
+from pathlib import Path
+from typing import Optional
+
 from kmer_ord.utils.logging_utils import section, info, warn
 import typer
 
@@ -9,7 +12,14 @@ setup_app = typer.Typer(help="Setup external dependencies for kmerord.")
 @setup_app.command("setup", rich_help_panel="Installation")
 def setup(
     force: bool = typer.Option(False, "-f", "--force", help="Recreate environments even if they already exist."),
-    with_tiara: bool = typer.Option(True, "--tiara/--no-tiara", help="Install the Tiara taxonomic classification environment (default: on).")):
+    with_tiara: bool = typer.Option(True, "--tiara/--no-tiara", help="Install the Tiara taxonomic classification environment (default: on)."),
+    rdna_db_dir: Optional[Path] = typer.Option(
+        None,
+        "--rdna-db-dir",
+        file_okay=False,
+        dir_okay=True,
+        help="Directory for rDNA-miner databases. Used only when --force reinstalls them.",
+    ),):
     """
     Setup all required external dependencies:
     - tools environment (kmer-counter, rust)
@@ -57,15 +67,18 @@ def setup(
     install_rust_tool()
     info("Rust tool installation complete.")
 
-    # rDNA-miner environment
+    # rDNA-miner environment. A fresh setup creates the env only.
+    # Databases are downloaded on --force, or via `kmer-ord rdna-db install`.
     section("Setting up rDNA-miner...")
 
+    installed_rdna_db = False
     if env_exists(RDNA_ENV):
         if force:
             info(f"{RDNA_ENV} exists. Recreating (--force enabled)...")
             repo_path = create_rdna_env(RDNA_ENV, recreate=True)
             install_rdna_miner(RDNA_ENV, repo_path)
-            install_rdna_miner_db(RDNA_ENV)
+            install_rdna_miner_db(RDNA_ENV, db_dir=rdna_db_dir)
+            installed_rdna_db = True
         else:
             info(f"{RDNA_ENV} already exists. Skipping.")
     else:
@@ -73,6 +86,12 @@ def setup(
         repo_path = create_rdna_env(RDNA_ENV)
         install_rdna_miner(RDNA_ENV, repo_path)
         info(f"{RDNA_ENV} created.")
+
+    if rdna_db_dir is not None and not installed_rdna_db:
+        warn(
+            "--rdna-db-dir applies when --force reinstalls rDNA-miner databases. "
+            "Install them with `kmer-ord rdna-db install` or `kmer-ord setup --force`."
+        )
 
     # Verify installed tools
     section("Verifying external tools...")

@@ -16,7 +16,18 @@ RDNA_COLUMNS = {
     "genus": "rdna_genus",
 }
 
-def run_rdna_miner(input_file, output_dir, feature_file, threads=1, platform="auto"):
+def run_rdna_miner(
+    input_file,
+    output_dir,
+    feature_file,
+    threads=1,
+    platform="auto",
+    db_dir=None,
+    rfam_db=None,
+    pr2_db=None,
+    silva_db=None,
+    force=False,
+):
     """
     Run rDNA-miner (barrnap -> Flye assembly -> Rfam/cmscan -> DECIPHER ->
     minimap2 back-mapping) inside its dedicated conda environment, then
@@ -28,6 +39,10 @@ def run_rdna_miner(input_file, output_dir, feature_file, threads=1, platform="au
     unlike Tiara this does not raise on failure: a broken run logs a warning
     and returns None, letting the rest of the kmer-ord pipeline continue
     without rDNA features rather than aborting the whole project run.
+
+    Database paths are forwarded only when set. rDNA-miner otherwise uses
+    RDNA_MINER_DB, then ~/.rdna-miner/db. `force` is rdna-miner's own
+    --force, so a rerun also rebuilds cached steps under the raw directory.
     """
     section("Running rDNA-miner on reads...")
     input_file = Path(input_file)
@@ -39,6 +54,17 @@ def run_rdna_miner(input_file, output_dir, feature_file, threads=1, platform="au
            "-o", str(output_dir),
            "-t", str(threads),
            "-p", platform]
+    # Omit unset paths so rDNA-miner keeps its own default resolution.
+    if db_dir is not None:
+        cmd += ["--db-dir", str(db_dir)]
+    if rfam_db is not None:
+        cmd += ["--rfam-db", str(rfam_db)]
+    if pr2_db is not None:
+        cmd += ["--pr2-db", str(pr2_db)]
+    if silva_db is not None:
+        cmd += ["--silva-db", str(silva_db)]
+    if force:
+        cmd.append("--force")
 
     result = subprocess.run(cmd, capture_output=True, text=True)
     if result.returncode != 0:
