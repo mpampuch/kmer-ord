@@ -1,12 +1,15 @@
 """rDNA-miner database flags on project/run-rdna, and the rdna-db commands."""
 
+import ast
 import subprocess
+from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 from kmer_ord.cli.main import app
 from kmer_ord.io.run_rdna import run_rdna_miner
-from kmer_ord.system.env_manager import RDNA_ENV
+from kmer_ord.system.env_manager import RDNA_ENV, pin_barrnap
 
 _runner = CliRunner()
 
@@ -15,6 +18,33 @@ _DB_FLAGS = ("--rdna-db-dir", "--rdna-rfam-db", "--rdna-pr2-db", "--rdna-silva-d
 
 def _message(result) -> str:
     return (result.output or "") + str(result.exception or "")
+
+
+def test_pin_barrnap_replaces_unpinned_dependency():
+    pinned = pin_barrnap("dependencies:\n  - barrnap\n  - flye\n")
+    assert "  - barrnap=0.9\n" in pinned
+    assert "  - flye\n" in pinned
+
+
+def test_pin_barrnap_raises_when_dependency_is_missing():
+    with pytest.raises(RuntimeError, match="barrnap"):
+        pin_barrnap("dependencies:\n  - flye\n")
+
+
+def test_rdna_db_cli_does_not_import_env_manager_at_startup():
+    """Importing the CLI must not require a symbol from env_manager.
+
+    The container build copied an older env_manager.py over the repo file.
+    That copy has no RDNA_DB_CHOICES, so a module-level import crashed
+    `kmer-ord setup` before any command ran.
+    """
+    source = Path(__file__).resolve().parents[1].joinpath("src/kmer_ord/cli/rdna_db.py").read_text()
+    tree = ast.parse(source)
+    for node in tree.body:
+        if isinstance(node, ast.ImportFrom) and node.module == "kmer_ord.system.env_manager":
+            raise AssertionError("rdna_db.py imports env_manager at module level")
+    from kmer_ord.cli.main import app
+    assert app is not None
 
 
 def test_help_lists_rdna_db_flags():

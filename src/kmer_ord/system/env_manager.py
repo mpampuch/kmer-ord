@@ -6,6 +6,7 @@ from pathlib import Path
 from importlib.resources import files
 import tempfile
 
+from kmer_ord.rdna_databases import RDNA_DB_CHOICES
 from kmer_ord.utils.logging_utils import section, info, warn
 
 # Environment constants
@@ -144,9 +145,30 @@ def install_rust_tool(env: str = TOOLS_ENV, force: bool = False):
 
 
 
+def pin_barrnap(yaml_text: str, version: str = "0.9") -> str:
+    """Pin barrnap in an rDNA-miner environment.yml.
+
+    rDNA-miner calls barrnap flags that changed after 0.9, so the conda env
+    is created from a patched copy of upstream's YAML.
+    """
+    patched = []
+    found = False
+    for line in yaml_text.splitlines():
+        if line.strip().startswith("- barrnap"):
+            indent = line[:len(line) - len(line.lstrip())]
+            patched.append(f"{indent}- barrnap={version}")
+            found = True
+        else:
+            patched.append(line)
+    if not found:
+        raise RuntimeError("Could not find a 'barrnap' dependency in rDNA-miner environment.yml")
+    return "\n".join(patched) + "\n"
+
+
 def create_rdna_env(name: str = RDNA_ENV, recreate: bool = False):
     """
     Clone rDNA-miner and create its conda environment from its own YAML.
+    Pins barrnap to 0.9 before creating the environment.
     """
     if recreate and env_exists(name):
         info(f"{name} exists. Removing (--force enabled)...")
@@ -164,6 +186,9 @@ def create_rdna_env(name: str = RDNA_ENV, recreate: bool = False):
     if not yaml_path.exists():
         raise FileNotFoundError("rDNA-miner environment.yml not found")
 
+    info("Pinning barrnap=0.9 in rDNA-miner environment.yml")
+    yaml_path.write_text(pin_barrnap(yaml_path.read_text()))
+
     info(f"Creating {name} from rDNA-miner YAML...")
     subprocess.run([
         "conda", "env", "create",
@@ -172,8 +197,6 @@ def create_rdna_env(name: str = RDNA_ENV, recreate: bool = False):
     ], check=True)
 
     return tmp_dir  # important for next step
-
-RDNA_DB_CHOICES = ("rfam", "silva", "pr2", "all")
 
 
 def _rdna_miner_cmd(env: str, args: list[str], db_dir: Path | None = None, force: bool = False) -> list[str]:

@@ -5,7 +5,7 @@ from typing import Optional
 import click
 import typer
 
-from kmer_ord.system.env_manager import RDNA_DB_CHOICES
+from kmer_ord.rdna_databases import RDNA_DB_CHOICES
 
 rdna_db_app = typer.Typer(help="Install and inspect rDNA-miner databases.")
 
