@@ -32,7 +32,7 @@ def rdna_db_install(
     ),
 ):
     """Install rDNA-miner databases into the rDNA-miner environment."""
-    from kmer_ord.system.env_manager import install_rdna_miner_db
+    from kmer_ord.system.rdna_miner_db import install_rdna_miner_db
     install_rdna_miner_db(db=db, db_dir=db_dir, force=force)
 
 
@@ -48,5 +48,5 @@ def rdna_db_status(
     ),
 ):
     """Show which rDNA-miner databases are installed."""
-    from kmer_ord.system.env_manager import rdna_miner_db_status
+    from kmer_ord.system.rdna_miner_db import rdna_miner_db_status
     rdna_miner_db_status(db_dir=db_dir)

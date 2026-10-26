@@ -31,18 +31,18 @@ def test_pin_barrnap_raises_when_dependency_is_missing():
         pin_barrnap("dependencies:\n  - flye\n")
 
 
-def test_rdna_db_cli_does_not_import_env_manager_at_startup():
-    """Importing the CLI must not require a symbol from env_manager.
+def test_rdna_db_cli_does_not_import_env_manager():
+    """rdna-db must not import env_manager.
 
-    The container build copied an older env_manager.py over the repo file.
-    That copy has no RDNA_DB_CHOICES, so a module-level import crashed
-    `kmer-ord setup` before any command ran.
+    The container build copies an older env_manager.py over the repo file.
+    That copy has the barrnap pin and no rdna_miner_db_status, so importing
+    the database commands from env_manager makes `kmer-ord rdna-db` fail.
     """
     source = Path(__file__).resolve().parents[1].joinpath("src/kmer_ord/cli/rdna_db.py").read_text()
     tree = ast.parse(source)
-    for node in tree.body:
+    for node in ast.walk(tree):
         if isinstance(node, ast.ImportFrom) and node.module == "kmer_ord.system.env_manager":
-            raise AssertionError("rdna_db.py imports env_manager at module level")
+            raise AssertionError("rdna_db.py imports env_manager")
     from kmer_ord.cli.main import app
     assert app is not None
 
@@ -80,7 +80,7 @@ def test_rdna_db_install_command(monkeypatch, tmp_path):
     def fake_run(cmd, check=False, **kwargs):
         calls.append(list(cmd))
 
-    monkeypatch.setattr("kmer_ord.system.env_manager.subprocess.run", fake_run)
+    monkeypatch.setattr("kmer_ord.system.rdna_miner_db.subprocess.run", fake_run)
     db_dir = tmp_path / "dbs"
     result = _runner.invoke(
         app,
@@ -99,7 +99,7 @@ def test_rdna_db_install_failure_exits_nonzero(monkeypatch):
     def fake_run(cmd, check=False, **kwargs):
         raise subprocess.CalledProcessError(returncode=1, cmd=cmd)
 
-    monkeypatch.setattr("kmer_ord.system.env_manager.subprocess.run", fake_run)
+    monkeypatch.setattr("kmer_ord.system.rdna_miner_db.subprocess.run", fake_run)
     result = _runner.invoke(app, ["rdna-db", "install", "all"])
     assert result.exit_code != 0
 
@@ -110,7 +110,7 @@ def test_rdna_db_status_command(monkeypatch, tmp_path):
     def fake_run(cmd, check=False, **kwargs):
         calls.append(list(cmd))
 
-    monkeypatch.setattr("kmer_ord.system.env_manager.subprocess.run", fake_run)
+    monkeypatch.setattr("kmer_ord.system.rdna_miner_db.subprocess.run", fake_run)
     db_dir = tmp_path / "dbs"
     result = _runner.invoke(app, ["rdna-db", "status", "--db-dir", str(db_dir)])
     assert result.exit_code == 0, _message(result)
