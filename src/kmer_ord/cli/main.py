@@ -425,6 +425,7 @@ def visualise_db(
     Visualise database tables.
     - Feature distributions and categorical comparisons
     - Embedding visualisations (UMAP, t-SNE, etc.)
+    - Parameter-screen feature grids, when dr/<normalisation>/<method>/parameter_screen/ exists beside the database
     """
     start_time = datetime.datetime.now()
     print_header(start_time)

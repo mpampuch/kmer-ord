@@ -1,6 +1,8 @@
 # src/kmer_ord/vis/embedding_plots.py
 
 from pathlib import Path
+import csv
+import re
 import sqlite3
 import pandas as pd
 import numpy as np
@@ -20,11 +22,50 @@ from kmer_ord.utils.logging_utils import section, info, warn
 # 400x400 means a ~526 GiB allocation (MemoryError).
 IGNORE_FEATURES = {"sequence_id", "header"}
 
+# Missing feature values stay visible (grey) instead of being dropped, so a
+# panel's coordinate range is the full embedding. The label is shared with
+# the parameter-screen colour key so every panel uses the same grey.
+NA_LABEL = "NA"
+NA_COLOR = "#BEBEBE"
+
 # Hard cap on the ds.by() aggregation array size for a single categorical
 # plot. 1 GiB allows ~1,600 categories at 400x400 — already far beyond the
 # 256-colour glasbey palette, so anything skipped here would have been an
 # unreadable plot anyway.
 MAX_CATEGORICAL_AGG_BYTES = 2**30
+
+# Same cell size and margins as render_param_screen_density_grid, so a
+# feature grid lines up with the density grid from the same screen.
+PARAM_SCREEN_PANEL_PX = 220
+PARAM_SCREEN_PADDING = 6
+PARAM_SCREEN_TITLE_H = 22
+PARAM_SCREEN_COL_LABEL_H = 20
+PARAM_SCREEN_ROW_LABEL_W = 95
+SCREEN_MANIFEST_NAME = "manifest.tsv"
+SCREEN_MANIFEST_COLUMNS = (
+    "filename",
+    "axis1_name",
+    "axis1_value",
+    "axis2_name",
+    "axis2_value",
+)
+
+# Suffixes written by _run_parameter_screen. Used only when a screen directory
+# predates manifest.tsv. The method's directory name picks the pattern, so
+# umap's `_n` and pacmap's `_n` are not ambiguous.
+_SCREEN_FILENAME_SUFFIX = {
+    "umap": re.compile(r"_n(?P<a1>\d+(?:\.\d+)?)(?:_min(?P<a2>\d+(?:\.\d+)?))?_\d+D\.tsv$"),
+    "tsne": re.compile(r"_p(?P<a1>\d+(?:\.\d+)?)(?:_lr(?P<a2>\d+(?:\.\d+)?))?_\d+D\.tsv$"),
+    "trimap": re.compile(
+        r"_inliers(?P<a1>\d+(?:\.\d+)?)(?:_weighttemp(?P<a2>\d+(?:\.\d+)?))?_\d+D\.tsv$"
+    ),
+    "pacmap": re.compile(
+        r"_n(?P<a1>\d+(?:\.\d+)?)(?:_FPratio(?P<a2>\d+(?:\.\d+)?))?_\d+D\.tsv$"
+    ),
+    "localmap": re.compile(
+        r"_n(?P<a1>\d+(?:\.\d+)?)(?:_FPratio(?P<a2>\d+(?:\.\d+)?))?_\d+D\.tsv$"
+    ),
+}
 
 
 def _plottable_feature_columns(features_df):
@@ -204,7 +245,10 @@ def _render_density(df, xcol, ycol, outdir, method):
     export_image(img, filename=f"{method}_density", export_path=str(outdir))
 
 
-def _render_feature_to_image(df, xcol, ycol, feature_col, mode="categorical", width=400, height=400, value_range=None):
+def _render_feature_to_image(
+    df, xcol, ycol, feature_col, mode="categorical", width=400, height=400,
+    value_range=None, color_key=None,
+):
     """
     Generate a datashader image for a single feature (categorical or continuous) for one DR method.
     Returns (datashader.Image, legend_info): for categorical mode legend_info is a color_key dict
@@ -216,10 +260,12 @@ def _render_feature_to_image(df, xcol, ycol, feature_col, mode="categorical", wi
     methods) so every method's panel maps the same value to the same color — a fixed per-panel
     span from local data would otherwise make identical colors mean different things in different
     panels, which is especially misleading once panels share one legend in a composite.
-    """
-    NA_LABEL = "NA"
-    NA_COLOR = "#BEBEBE"
 
+    color_key : optional category -> hex map. When set, it is used as-is instead of assigning
+    glasbey from the categories present in this frame. Parameter-screen panels pass one key
+    built from the whole feature column; rebuilding it here would give a label a new colour
+    in any panel that happens to lack one of the categories.
+    """
     if mode == "categorical":
         # Keep every point with valid coordinates, regardless of whether it
         # has this feature — sequences lacking the feature (e.g. reads with
@@ -263,18 +309,23 @@ def _render_feature_to_image(df, xcol, ycol, feature_col, mode="categorical", wi
             return None, None
 
         real_categories = [c for c in categories if c != NA_LABEL]
-        if len(real_categories) == 1:
-            color_key = {real_categories[0]: "#FF0000"}
+        if color_key is None:
+            if len(real_categories) == 1:
+                color_key = {real_categories[0]: "#FF0000"}
+            else:
+                # glasbey is a qualitative palette built for maximally-distinct
+                # adjacent colors; sampling consecutive indices out of a smooth
+                # sequential colormap like `fire` here produced near-identical
+                # colors for low category counts (e.g. fire[0]/fire[1] are both
+                # effectively black), making categories visually indistinguishable.
+                palette = [glasbey[i % len(glasbey)] for i in range(len(real_categories))]
+                color_key = dict(zip(real_categories, palette))
+            if NA_LABEL in categories:
+                color_key[NA_LABEL] = NA_COLOR
         else:
-            # glasbey is a qualitative palette built for maximally-distinct
-            # adjacent colors; sampling consecutive indices out of a smooth
-            # sequential colormap like `fire` here produced near-identical
-            # colors for low category counts (e.g. fire[0]/fire[1] are both
-            # effectively black), making categories visually indistinguishable.
-            palette = [glasbey[i % len(glasbey)] for i in range(len(real_categories))]
-            color_key = dict(zip(real_categories, palette))
-        if NA_LABEL in categories:
-            color_key[NA_LABEL] = NA_COLOR
+            color_key = dict(color_key)
+            if NA_LABEL in categories and NA_LABEL not in color_key:
+                color_key[NA_LABEL] = NA_COLOR
 
         # min_alpha=255: with categories this imbalanced (NA usually vastly
         # outnumbers real hits), most cells hold count 1-3 at this
@@ -587,3 +638,382 @@ def _render_feature_composite_from_cache(per_method_feature, feature_col, outdir
     out_path = outdir / f"feature_composite_{feature_col}.png"
     composite.save(out_path)
     info(f"Saved : {out_path}")
+
+
+def _parse_axis_token(token) -> int | float | None:
+    """Turn a manifest or filename token back into the number the screen used."""
+    text = str(token).strip()
+    if text == "" or text.lower() == "nan":
+        return None
+    if any(ch in text for ch in ".eE"):
+        return float(text)
+    return int(text)
+
+
+def _shared_categorical_color_key(series: pd.Series) -> dict:
+    """One glasbey map for every panel of a feature.
+
+    Sorted labels, not appearance order, so two hyperparameter settings that
+    contain different subsets still paint the same label with the same colour.
+    NA is always present: reads without the feature are grey in every panel.
+    """
+    real = sorted({str(value) for value in series.dropna().unique()})
+    if len(real) == 1:
+        color_key = {real[0]: "#FF0000"}
+    else:
+        palette = [glasbey[i % len(glasbey)] for i in range(len(real))]
+        color_key = dict(zip(real, palette))
+    color_key[NA_LABEL] = NA_COLOR
+    return color_key
+
+
+def _categorical_feature_within_budget(series: pd.Series, width: int, height: int) -> bool:
+    """False when ds.by() for this column would exceed MAX_CATEGORICAL_AGG_BYTES.
+
+    Counted on the whole feature column, before any embedding is read, so a
+    high-cardinality column never starts a panel.
+    """
+    n_categories = int(series.nunique(dropna=True))
+    if series.isna().any():
+        n_categories += 1
+    if n_categories == 0:
+        return False
+    agg_bytes = width * height * n_categories * 4
+    if agg_bytes > MAX_CATEGORICAL_AGG_BYTES:
+        warn(
+            f"Skipping {series.name}: {n_categories} unique values would "
+            f"need {agg_bytes / 2**30:.1f} GiB to aggregate"
+        )
+        return False
+    return True
+
+
+def write_screen_manifest(directory: Path, rows: list[dict]) -> Path:
+    """Write parameter_screen/manifest.tsv. Rows are labels, not embeddings."""
+    directory = Path(directory)
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / SCREEN_MANIFEST_NAME
+    with path.open("w", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=list(SCREEN_MANIFEST_COLUMNS),
+            delimiter="\t",
+            lineterminator="\n",
+        )
+        writer.writeheader()
+        for row in rows:
+            writer.writerow({column: row[column] for column in SCREEN_MANIFEST_COLUMNS})
+    return path
+
+
+def _panels_from_manifest(screen_dir: Path, manifest_path: Path) -> list[dict]:
+    panels = []
+    with manifest_path.open(newline="") as handle:
+        reader = csv.DictReader(handle, delimiter="\t")
+        for row in reader:
+            path = screen_dir / row["filename"]
+            if not path.is_file():
+                warn(f"Parameter screen manifest lists missing file: {path.name}")
+                continue
+            panels.append({
+                "path": path,
+                "axis1_name": row["axis1_name"],
+                "axis1_value": _parse_axis_token(row["axis1_value"]),
+                "axis2_name": row["axis2_name"],
+                "axis2_value": _parse_axis_token(row["axis2_value"]),
+            })
+    return panels
+
+
+def _held_axis2_value(method: str):
+    """Value the 1D screen held fixed: the method's default preset, else 0.
+
+    Matches _run_parameter_screen, which passes DR_HYPERPARAMS['default']
+    into the model and records `default or 0` on the density grid when that
+    preset has no entry (t-SNE's default preset has no learning_rate).
+    """
+    from kmer_ord.dr.methods import DR_HYPERPARAMS
+    from kmer_ord.dr.screen_grid import SCREEN_AXES
+
+    _, axis2_name = SCREEN_AXES[method]
+    value = DR_HYPERPARAMS.get(method, {}).get("default", {}).get(axis2_name)
+    return 0 if value is None else value
+
+
+def _panels_from_filenames(screen_dir: Path, method: str) -> list[dict]:
+    from kmer_ord.dr.screen_grid import SCREEN_AXES
+
+    pattern = _SCREEN_FILENAME_SUFFIX.get(method)
+    if pattern is None or method not in SCREEN_AXES:
+        return []
+    axis1_name, axis2_name = SCREEN_AXES[method]
+    held = _held_axis2_value(method)
+    panels = []
+    for path in sorted(screen_dir.glob("*.tsv")):
+        match = pattern.search(path.name)
+        if not match:
+            warn(f"Skipping unrecognised parameter-screen file: {path.name}")
+            continue
+        axis2_token = match.group("a2")
+        panels.append({
+            "path": path,
+            "axis1_name": axis1_name,
+            "axis1_value": _parse_axis_token(match.group("a1")),
+            "axis2_name": axis2_name,
+            "axis2_value": held if axis2_token is None else _parse_axis_token(axis2_token),
+        })
+    return panels
+
+
+def load_screen_panels(screen_dir: Path, method: str) -> list[dict]:
+    """Panels in a parameter_screen directory.
+
+    manifest.tsv is authoritative when it exists, including for screens whose
+    filenames would parse to different numbers. Directories written before
+    manifests existed fall back to the filename suffix.
+    """
+    screen_dir = Path(screen_dir)
+    manifest_path = screen_dir / SCREEN_MANIFEST_NAME
+    if manifest_path.is_file():
+        return _panels_from_manifest(screen_dir, manifest_path)
+    return _panels_from_filenames(screen_dir, method)
+
+
+def render_param_screen_feature_grid(
+    panels: dict,
+    axis1_vals: list,
+    axis2_vals: list,
+    axis1_name: str,
+    axis2_name: str,
+    method: str,
+    feature_col: str,
+    out_path: Path,
+    mode: str,
+    legend_info,
+    width: int = PARAM_SCREEN_PANEL_PX,
+    height: int = PARAM_SCREEN_PANEL_PX,
+    padding: int = PARAM_SCREEN_PADDING,
+    border: int = 1,
+) -> Path | None:
+    """Composite one feature's panels. Rows are axis1, columns are axis2.
+
+    Each panel is already scaled to its own coordinate range. legend_info is
+    a category colour key, or a (vmin, vmax) pair for a continuous feature.
+    """
+    if not panels:
+        return None
+
+    n_rows, n_cols = len(axis1_vals), len(axis2_vals)
+    total_width = PARAM_SCREEN_ROW_LABEL_W + n_cols * width + (n_cols - 1) * padding
+    total_height = (
+        PARAM_SCREEN_TITLE_H
+        + PARAM_SCREEN_COL_LABEL_H
+        + n_rows * height
+        + (n_rows - 1) * padding
+    )
+
+    try:
+        font = ImageFont.truetype("arial.ttf", 13)
+    except Exception:
+        font = ImageFont.load_default()
+
+    title = (
+        f"{method.upper()} parameter screen  —  {feature_col}  —  "
+        f"rows: {axis1_name}   columns: {axis2_name}"
+    )
+    # A one-column screen is narrower than this title. Grow the canvas so the
+    # feature name is not clipped; panel origins are unchanged.
+    measurer = ImageDraw.Draw(Image.new("RGBA", (1, 1)))
+    title_w = measurer.textbbox((0, 0), title, font=font)[2]
+    total_width = max(total_width, PARAM_SCREEN_ROW_LABEL_W + title_w + 8)
+
+    composite = Image.new("RGBA", (total_width, total_height), (255, 255, 255, 255))
+    draw = ImageDraw.Draw(composite)
+    draw.text((PARAM_SCREEN_ROW_LABEL_W, 3), title, fill="black", font=font)
+
+    for col_index, axis2_value in enumerate(axis2_vals):
+        x = PARAM_SCREEN_ROW_LABEL_W + col_index * (width + padding)
+        draw.text(
+            (x + 4, PARAM_SCREEN_TITLE_H + 3),
+            f"{axis2_name}={axis2_value}",
+            fill="black",
+            font=font,
+        )
+
+    for row_index, axis1_value in enumerate(axis1_vals):
+        y = PARAM_SCREEN_TITLE_H + PARAM_SCREEN_COL_LABEL_H + row_index * (height + padding)
+        draw.text((4, y + height // 2 - 6), f"{axis1_name}={axis1_value}", fill="black", font=font)
+        for col_index, axis2_value in enumerate(axis2_vals):
+            x = PARAM_SCREEN_ROW_LABEL_W + col_index * (width + padding)
+            panel = panels.get((axis1_value, axis2_value))
+            if panel is None:
+                continue
+            panel = panel.resize((width, height)).convert("RGBA")
+            composite.paste(panel, (x, y), panel)
+            draw.rectangle([x, y, x + width, y + height], outline="black", width=border)
+
+    if mode == "categorical" and legend_info:
+        composite = _draw_legend_onto(composite, legend_info)
+    elif mode == "continuous" and legend_info is not None:
+        vmin, vmax = legend_info
+        composite = _draw_colorbar_onto(composite, vmin, vmax, CET_L17)
+
+    out_path = Path(out_path)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    composite.save(out_path)
+    info(f"Saved : {out_path}")
+    return out_path
+
+
+def _discover_param_screen_dirs(db_path: Path) -> list[Path]:
+    dr_root = Path(db_path).parent / "dr"
+    if not dr_root.is_dir():
+        return []
+    return sorted(path for path in dr_root.glob("*/*/parameter_screen") if path.is_dir())
+
+
+def plot_param_screen_features(db_path: Path, output_root: Path, mode: str = "all") -> None:
+    """Colour each parameter-screen panel by the features table.
+
+    One small-multiple grid per feature per method. Density-only mode does
+    nothing: the density grid is already written during the screen. A project
+    with no dr/<normalisation>/<method>/parameter_screen directory returns
+    without creating plot files.
+
+    Embeddings are read one TSV at a time and dropped before the next file.
+    Only the small panel images are kept, so a large read set does not hold
+    every combination's sequence_id column at once.
+    """
+    if mode not in ("categorical", "continuous", "all"):
+        return
+
+    screen_dirs = _discover_param_screen_dirs(db_path)
+    if not screen_dirs:
+        return
+
+    conn = sqlite3.connect(str(db_path))
+    try:
+        features_df = _load_features(conn)
+    finally:
+        conn.close()
+
+    categorical_cols, continuous_cols = _plottable_feature_columns(features_df)
+    if mode == "categorical":
+        continuous_cols = []
+    elif mode == "continuous":
+        categorical_cols = []
+
+    if features_df is not None:
+        categorical_cols = [
+            col for col in categorical_cols
+            if _categorical_feature_within_budget(
+                features_df[col], PARAM_SCREEN_PANEL_PX, PARAM_SCREEN_PANEL_PX
+            )
+        ]
+
+    continuous_ranges = {}
+    if features_df is not None:
+        for col in continuous_cols:
+            values = features_df[col].dropna()
+            if not values.empty:
+                continuous_ranges[col] = (float(values.min()), float(values.max()))
+    continuous_cols = [col for col in continuous_cols if col in continuous_ranges]
+
+    if not categorical_cols and not continuous_cols:
+        return
+
+    color_keys = {
+        col: _shared_categorical_color_key(features_df[col]) for col in categorical_cols
+    }
+    feature_columns = ["sequence_id", *categorical_cols, *continuous_cols]
+    features_view = features_df[feature_columns].copy()
+    features_view["sequence_id"] = features_view["sequence_id"].astype(str)
+
+    width = height = PARAM_SCREEN_PANEL_PX
+    for screen_dir in screen_dirs:
+        method = screen_dir.parent.name
+        normalisation = screen_dir.parent.parent.name
+        panels_meta = load_screen_panels(screen_dir, method)
+        if not panels_meta:
+            continue
+
+        info(
+            f"parameter screen features  ·  {normalisation}/{method}"
+            f"  ({len(panels_meta)} panels)"
+        )
+        axis1_vals = sorted({panel["axis1_value"] for panel in panels_meta})
+        axis2_vals = sorted({panel["axis2_value"] for panel in panels_meta})
+        axis1_name = panels_meta[0]["axis1_name"]
+        axis2_name = panels_meta[0]["axis2_name"]
+        xcol, ycol = f"{method}_1", f"{method}_2"
+        per_feature = {col: {} for col in (*categorical_cols, *continuous_cols)}
+        seen_positions = set()
+
+        for meta in panels_meta:
+            position = (meta["axis1_value"], meta["axis2_value"])
+            if position in seen_positions:
+                warn(
+                    f"Duplicate parameter-screen axes {axis1_name}={position[0]}, "
+                    f"{axis2_name}={position[1]}; keeping the first file"
+                )
+                continue
+            embedding = pd.read_csv(meta["path"], sep="\t")
+            if "sequence_id" not in embedding.columns:
+                warn(f"Skipping {meta['path'].name}: no sequence_id column")
+                continue
+            if xcol not in embedding.columns or ycol not in embedding.columns:
+                warn(f"Skipping {meta['path'].name}: expected columns {xcol}, {ycol}")
+                continue
+            seen_positions.add(position)
+            embedding["sequence_id"] = embedding["sequence_id"].astype(str)
+            merged = embedding.merge(features_view, on="sequence_id", how="left")
+            try:
+                for col in categorical_cols:
+                    img, _ = _render_feature_to_image(
+                        merged, xcol, ycol, col, mode="categorical",
+                        width=width, height=height, color_key=color_keys[col],
+                    )
+                    if img is not None:
+                        per_feature[col][position] = (
+                            img.to_pil().resize((width, height)).convert("RGBA")
+                        )
+                for col in continuous_cols:
+                    img, _ = _render_feature_to_image(
+                        merged, xcol, ycol, col, mode="continuous",
+                        width=width, height=height, value_range=continuous_ranges[col],
+                    )
+                    if img is not None:
+                        per_feature[col][position] = (
+                            img.to_pil().resize((width, height)).convert("RGBA")
+                        )
+            finally:
+                # Drop this combination's sequence_id frame before the next file.
+                del embedding, merged
+
+        out_dir = Path(output_root) / normalisation / method
+        for col in categorical_cols:
+            render_param_screen_feature_grid(
+                panels=per_feature[col],
+                axis1_vals=axis1_vals,
+                axis2_vals=axis2_vals,
+                axis1_name=axis1_name,
+                axis2_name=axis2_name,
+                method=method,
+                feature_col=col,
+                out_path=out_dir / f"{method}_by_{col}.png",
+                mode="categorical",
+                legend_info=color_keys[col],
+            )
+        for col in continuous_cols:
+            render_param_screen_feature_grid(
+                panels=per_feature[col],
+                axis1_vals=axis1_vals,
+                axis2_vals=axis2_vals,
+                axis1_name=axis1_name,
+                axis2_name=axis2_name,
+                method=method,
+                feature_col=col,
+                out_path=out_dir / f"{method}_by_{col}.png",
+                mode="continuous",
+                legend_info=continuous_ranges[col],
+            )
