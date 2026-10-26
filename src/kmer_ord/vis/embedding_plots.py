@@ -3,6 +3,7 @@
 from pathlib import Path
 import csv
 import re
+import shutil
 import sqlite3
 import pandas as pd
 import numpy as np
@@ -872,23 +873,48 @@ def _discover_param_screen_dirs(db_path: Path) -> list[Path]:
     return sorted(path for path in dr_root.glob("*/*/parameter_screen") if path.is_dir())
 
 
+def _copy_param_screen_density(screen_dir: Path, output_root: Path) -> Path | None:
+    """Copy {method}_param_screen_density.png into plots/param_screen/<norm>/<method>/.
+
+    The grid is rendered during dimensionality reduction, under dr/. Visualise
+    keeps that file in place and also puts a copy next to the feature grids.
+    """
+    method = screen_dir.parent.name
+    normalisation = screen_dir.parent.parent.name
+    source = screen_dir / f"{method}_param_screen_density.png"
+    if not source.is_file():
+        return None
+    dest = Path(output_root) / normalisation / method / source.name
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(source, dest)
+    info(f"Saved : {dest}")
+    return dest
+
+
 def plot_param_screen_features(db_path: Path, output_root: Path, mode: str = "all") -> None:
     """Colour each parameter-screen panel by the features table.
 
-    One small-multiple grid per feature per method. Density-only mode does
-    nothing: the density grid is already written during the screen. A project
-    with no dr/<normalisation>/<method>/parameter_screen directory returns
+    One small-multiple grid per feature per method. The density grid already
+    written under dr/<normalisation>/<method>/parameter_screen/ is copied into
+    the same plots folder. Density-only mode copies that grid and does not
+    colour panels. A project with no parameter_screen directory returns
     without creating plot files.
 
     Embeddings are read one TSV at a time and dropped before the next file.
     Only the small panel images are kept, so a large read set does not hold
     every combination's sequence_id column at once.
     """
-    if mode not in ("categorical", "continuous", "all"):
+    if mode not in ("density", "categorical", "continuous", "all"):
         return
 
     screen_dirs = _discover_param_screen_dirs(db_path)
     if not screen_dirs:
+        return
+
+    for screen_dir in screen_dirs:
+        _copy_param_screen_density(screen_dir, output_root)
+
+    if mode == "density":
         return
 
     conn = sqlite3.connect(str(db_path))

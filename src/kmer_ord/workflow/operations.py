@@ -851,10 +851,10 @@ class PlotEmbeddings(Operation):
         ):
             plot_embeddings_from_db(db_path=db_path, output_root=output_dir, mode=self.mode)
 
-        # Density grids are written during the screen itself. Feature colours
-        # need the database, so they are drawn here, and only when this run
+        # The density grid is rendered under dr/ during the screen. Copy it
+        # into plots/param_screen here, and colour the panels when this run
         # asked for categorical or continuous embeddings.
-        if self.mode in ("categorical", "continuous", "all"):
+        if self.mode in ("density", "categorical", "continuous", "all"):
             screen_output = context.output_dir / "plots" / "param_screen"
             with context.benchmark_timer(
                 label="plot_param_screen",
