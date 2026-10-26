@@ -42,6 +42,11 @@ PARAM_SCREEN_PADDING = 6
 PARAM_SCREEN_TITLE_H = 22
 PARAM_SCREEN_COL_LABEL_H = 20
 PARAM_SCREEN_ROW_LABEL_W = 95
+# Pixels of data span kept empty inside each panel so a point on the far
+# edge is not dropped and dynspread can paint past it. Pixels of sheet left
+# after the last column and last row so that border is inside the PNG.
+PARAM_SCREEN_RANGE_PAD_PX = 4
+PARAM_SCREEN_EDGE_PAD = 8
 SCREEN_MANIFEST_NAME = "manifest.tsv"
 SCREEN_MANIFEST_COLUMNS = (
     "filename",
@@ -246,9 +251,27 @@ def _render_density(df, xcol, ycol, outdir, method):
     export_image(img, filename=f"{method}_density", export_path=str(outdir))
 
 
+def _padded_data_range(series, plot_px, pad_px=PARAM_SCREEN_RANGE_PAD_PX):
+    """Expand a data extent so edge points and dynspread glyphs stay on the canvas.
+
+    Datashader's bins are half-open, so a point exactly at the maximum is
+    dropped, and dynspread clips any glyph that would paint past the array.
+    On the exported image that clip is the right edge and the bottom edge.
+    pad_px is the margin in pixels of the data span. A zero span has no
+    pixels to scale, so it gets a fixed range instead and the canvas stays valid.
+    """
+    lo = float(series.min())
+    hi = float(series.max())
+    span = hi - lo
+    if span == 0 or plot_px <= 0:
+        return lo - 1.0, hi + 1.0
+    pad = span * pad_px / plot_px
+    return lo - pad, hi + pad
+
+
 def _render_feature_to_image(
     df, xcol, ycol, feature_col, mode="categorical", width=400, height=400,
-    value_range=None, color_key=None,
+    value_range=None, color_key=None, background=None, range_pad_px=0,
 ):
     """
     Generate a datashader image for a single feature (categorical or continuous) for one DR method.
@@ -266,6 +289,13 @@ def _render_feature_to_image(
     glasbey from the categories present in this frame. Parameter-screen panels pass one key
     built from the whole feature column; rebuilding it here would give a label a new colour
     in any panel that happens to lack one of the categories.
+
+    background : optional colour for empty bins, applied after dynspread. Parameter-screen
+    panels pass "black", matching the density grid. Left unset, empty bins stay transparent
+    so the standalone embedding plots are unchanged.
+
+    range_pad_px : pixels of data span added on every side of the coordinate range.
+    Zero keeps the exact data min and max, which is what the standalone plots use.
     """
     if mode == "categorical":
         # Keep every point with valid coordinates, regardless of whether it
@@ -280,11 +310,17 @@ def _render_feature_to_image(
     if df_local.empty:
         return None, None
 
+    if range_pad_px:
+        x_range = _padded_data_range(df_local[xcol], width, range_pad_px)
+        y_range = _padded_data_range(df_local[ycol], height, range_pad_px)
+    else:
+        x_range = (float(df_local[xcol].min()), float(df_local[xcol].max()))
+        y_range = (float(df_local[ycol].min()), float(df_local[ycol].max()))
     cvs = ds.Canvas(
         plot_width=width,
         plot_height=height,
-        x_range=(df_local[xcol].min(), df_local[xcol].max()),
-        y_range=(df_local[ycol].min(), df_local[ycol].max())
+        x_range=x_range,
+        y_range=y_range,
     )
 
     if mode == "categorical":
@@ -353,6 +389,10 @@ def _render_feature_to_image(
         raise ValueError(f"Unknown mode: {mode}")
 
     img = tf.dynspread(img)
+    # After dynspread, so pixels the spread just painted are covered too.
+    # Only parameter-screen panels ask for this; standalone plots stay transparent.
+    if background is not None:
+        img = tf.set_background(img, background)
     return img, color_key
 
 
@@ -503,8 +543,8 @@ def render_param_screen_density_grid(
             continue
         cvs = ds.Canvas(
             plot_width=width, plot_height=height,
-            x_range=(df_local[xcol].min(), df_local[xcol].max()),
-            y_range=(df_local[ycol].min(), df_local[ycol].max()),
+            x_range=_padded_data_range(df_local[xcol], width),
+            y_range=_padded_data_range(df_local[ycol], height),
         )
         agg = cvs.points(df_local, xcol, ycol)
         img = tf.shade(agg, cmap=fire, how="eq_hist")
@@ -518,8 +558,10 @@ def render_param_screen_density_grid(
 
     title_h, col_label_h, row_label_w = 22, 20, 95
     n_rows, n_cols = len(axis1_vals), len(axis2_vals)
-    total_width = row_label_w + n_cols * width + (n_cols - 1) * padding
-    total_height = title_h + col_label_h + n_rows * height + (n_rows - 1) * padding
+    # Trailing margin: the last column's and last row's borders sit on the
+    # pixel just past the panel, which is outside the PNG when the sheet is flush.
+    total_width = row_label_w + n_cols * width + (n_cols - 1) * padding + PARAM_SCREEN_EDGE_PAD
+    total_height = title_h + col_label_h + n_rows * height + (n_rows - 1) * padding + PARAM_SCREEN_EDGE_PAD
 
     composite = Image.new("RGBA", (total_width, total_height), (255, 255, 255, 255))
     draw = ImageDraw.Draw(composite)
@@ -805,12 +847,17 @@ def render_param_screen_feature_grid(
         return None
 
     n_rows, n_cols = len(axis1_vals), len(axis2_vals)
-    total_width = PARAM_SCREEN_ROW_LABEL_W + n_cols * width + (n_cols - 1) * padding
+    # Same trailing margin as the density grid: the last border is inside the PNG.
+    total_width = (
+        PARAM_SCREEN_ROW_LABEL_W + n_cols * width + (n_cols - 1) * padding
+        + PARAM_SCREEN_EDGE_PAD
+    )
     total_height = (
         PARAM_SCREEN_TITLE_H
         + PARAM_SCREEN_COL_LABEL_H
         + n_rows * height
         + (n_rows - 1) * padding
+        + PARAM_SCREEN_EDGE_PAD
     )
 
     try:
@@ -998,6 +1045,7 @@ def plot_param_screen_features(db_path: Path, output_root: Path, mode: str = "al
                     img, _ = _render_feature_to_image(
                         merged, xcol, ycol, col, mode="categorical",
                         width=width, height=height, color_key=color_keys[col],
+                        background="black", range_pad_px=PARAM_SCREEN_RANGE_PAD_PX,
                     )
                     if img is not None:
                         per_feature[col][position] = (
@@ -1007,6 +1055,7 @@ def plot_param_screen_features(db_path: Path, output_root: Path, mode: str = "al
                     img, _ = _render_feature_to_image(
                         merged, xcol, ycol, col, mode="continuous",
                         width=width, height=height, value_range=continuous_ranges[col],
+                        background="black", range_pad_px=PARAM_SCREEN_RANGE_PAD_PX,
                     )
                     if img is not None:
                         per_feature[col][position] = (

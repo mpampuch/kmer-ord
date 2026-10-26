@@ -15,9 +15,12 @@ from PIL import Image
 from kmer_ord.vis.embedding_plots import (
     MAX_CATEGORICAL_AGG_BYTES,
     PARAM_SCREEN_COL_LABEL_H,
+    PARAM_SCREEN_EDGE_PAD,
     PARAM_SCREEN_PADDING,
     PARAM_SCREEN_ROW_LABEL_W,
     PARAM_SCREEN_TITLE_H,
+    _padded_data_range,
+    _render_feature_to_image,
     load_screen_panels,
     plot_param_screen_features,
     render_param_screen_feature_grid,
@@ -121,6 +124,37 @@ class TestManifestAndFilenames:
         assert panels[0]["axis2_value"] == 0.1
 
 
+class TestPanelBackgroundAndRange:
+    def test_padded_data_range_extends_past_both_ends(self):
+        lo, hi = _padded_data_range(pd.Series([0.0, 10.0]), plot_px=100, pad_px=4)
+        assert lo == pytest.approx(-0.4)
+        assert hi == pytest.approx(10.4)
+
+    def test_padded_data_range_zero_span_stays_nonempty(self):
+        lo, hi = _padded_data_range(pd.Series([3.0, 3.0]), plot_px=100)
+        assert lo < 3.0 < hi
+
+    def test_screen_panel_corner_is_black_and_standalone_stays_transparent(self):
+        # Points sit in the middle of the padded range, so the corner is empty.
+        frame = pd.DataFrame({
+            "x": np.linspace(-1, 1, 40),
+            "y": np.linspace(-0.2, 0.2, 40),
+            "taxon": ["algae"] * 40,
+        })
+        black, _ = _render_feature_to_image(
+            frame, "x", "y", "taxon", mode="categorical",
+            width=60, height=60, background="black", range_pad_px=4,
+        )
+        plain, _ = _render_feature_to_image(
+            frame, "x", "y", "taxon", mode="categorical",
+            width=60, height=60, range_pad_px=4,
+        )
+        black_px = black.to_pil().convert("RGBA").getpixel((0, 0))
+        plain_px = plain.to_pil().convert("RGBA").getpixel((0, 0))
+        assert black_px == (0, 0, 0, 255)
+        assert plain_px[3] == 0
+
+
 class TestFeatureGridLayout:
     def test_legacy_filenames_land_on_the_matching_row_and_column(self, tmp_path):
         screen = tmp_path / "parameter_screen"
@@ -176,6 +210,12 @@ class TestFeatureGridLayout:
         # The shared legend is appended to the right of the grid, not painted over a panel.
         grid_width = PARAM_SCREEN_ROW_LABEL_W + 2 * panel + PARAM_SCREEN_PADDING
         assert img.width > grid_width
+        # The last panel used to end flush with the PNG, so its right and bottom
+        # borders were drawn on a pixel that does not exist.
+        last_x = PARAM_SCREEN_ROW_LABEL_W + (panel + PARAM_SCREEN_PADDING)
+        last_y = PARAM_SCREEN_TITLE_H + PARAM_SCREEN_COL_LABEL_H + (panel + PARAM_SCREEN_PADDING)
+        assert img.width > last_x + panel
+        assert img.height >= last_y + panel + PARAM_SCREEN_EDGE_PAD
 
 
 class TestPlotParamScreenFeatures:
@@ -229,7 +269,7 @@ class TestPlotParamScreenFeatures:
         real = embedding_plots._render_feature_to_image
 
         def spy(df, xcol, ycol, feature_col, mode="categorical", width=400, height=400,
-                 value_range=None, color_key=None):
+                 value_range=None, color_key=None, **kwargs):
             captured.append({
                 "feature": feature_col,
                 "mode": mode,
@@ -237,7 +277,7 @@ class TestPlotParamScreenFeatures:
                 "values": set(df[feature_col].dropna().astype(str)),
             })
             return real(df, xcol, ycol, feature_col, mode=mode, width=width, height=height,
-                        value_range=value_range, color_key=color_key)
+                        value_range=value_range, color_key=color_key, **kwargs)
 
         monkeypatch.setattr(embedding_plots, "_render_feature_to_image", spy)
         plot_param_screen_features(
