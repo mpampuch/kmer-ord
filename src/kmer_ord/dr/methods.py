@@ -149,6 +149,34 @@ def _maybe_disable_internal_pca(params: dict, n_feat: int) -> dict:
     return kwargs
 
 
+def _library_verbose_kwargs(method: str, verbose: bool) -> dict:
+    """Constructor kwargs that turn on a library's own progress log.
+
+    t-SNE's verbose is an integer; UMAP, TriMAP, PaCMAP, and LocalMAP take
+    a bool. PCA and LLE have no useful progress flag.
+    """
+    if not verbose:
+        return {}
+    method = method.lower()
+    if method == "tsne":
+        return {"verbose": 1}
+    if method in {"umap", "trimap", "pacmap", "localmap"}:
+        return {"verbose": True}
+    return {}
+
+
+def _with_library_verbose(method: str, verbose: bool, params: dict) -> dict:
+    """Copy params, then set the library verbose flag.
+
+    Python 3.11 rejects the same keyword from two ** unpackings in one
+    call, so the flag is merged into a single dict. update() runs after
+    the copy so a preset verbose=False cannot turn the flag back off.
+    """
+    merged = dict(params)
+    merged.update(_library_verbose_kwargs(method, verbose))
+    return merged
+
+
 def merge_embedding_tsvs(tsv_paths: list[Path], merged_file: Path) -> Path:
     """Join per-method embedding TSVs on row order, keeping one sequence_id.
 
@@ -176,6 +204,7 @@ def _run_single_method(
     seed: int,
     scale: str = "default",
     n_jobs: int = 1,
+    verbose: bool = False,
 ):
     import pandas as pd
     import scipy.sparse as sparse
@@ -199,30 +228,49 @@ def _run_single_method(
 
     elif method == "tsne":
         from sklearn.manifold import TSNE
-        model = TSNE(n_components=dims, random_state=seed, n_jobs=n_jobs, **params)
+        model = TSNE(
+            n_components=dims,
+            random_state=seed,
+            n_jobs=n_jobs,
+            **_with_library_verbose(method, verbose, params),
+        )
         embedding = model.fit_transform(X)
 
     elif method == "umap":
         import umap
         warn("UMAP random seed is disabled to allow parallel execution.")
-        model = umap.UMAP(n_components=dims, random_state=None, n_jobs=n_jobs, **params)
+        model = umap.UMAP(
+            n_components=dims,
+            random_state=None,
+            n_jobs=n_jobs,
+            **_with_library_verbose(method, verbose, params),
+        )
         embedding = model.fit_transform(X)
         graph = getattr(model, "graph_", None)
 
     elif method == "trimap":
         from trimap import TRIMAP
-        model = TRIMAP(n_dims=dims, **_maybe_disable_internal_pca(params, n_feat))
+        model = TRIMAP(
+            n_dims=dims,
+            **_with_library_verbose(method, verbose, _maybe_disable_internal_pca(params, n_feat)),
+        )
         embedding = model.fit_transform(X)
 
     elif method == "pacmap":
         from pacmap import PaCMAP
-        model = PaCMAP(n_components=dims, **_maybe_disable_internal_pca(params, n_feat))
+        model = PaCMAP(
+            n_components=dims,
+            **_with_library_verbose(method, verbose, _maybe_disable_internal_pca(params, n_feat)),
+        )
         embedding = model.fit_transform(X)
         graph = getattr(model, "graph_", None)
 
     elif method == "localmap":
         from pacmap.pacmap import LocalMAP
-        model = LocalMAP(n_components=dims, **_maybe_disable_internal_pca(params, n_feat))
+        model = LocalMAP(
+            n_components=dims,
+            **_with_library_verbose(method, verbose, _maybe_disable_internal_pca(params, n_feat)),
+        )
         embedding = model.fit_transform(X)
         graph = getattr(model, "graph_", None)
 
@@ -284,6 +332,7 @@ def _run_one_method_and_save(
     log_dir,
     script_name,
     record_benchmark: bool = True,
+    verbose: bool = False,
 ) -> tuple[Path, Path | None]:
     """Fit one method, write its TSV (and graph if any). Used in-process and in the child."""
     import scipy.sparse as sparse
@@ -314,6 +363,7 @@ def _run_one_method_and_save(
             grid=screen_grid,
             log_dir=log_dir,
             script_name=script_name,
+            verbose=verbose,
         )
 
     m = 14
@@ -332,6 +382,7 @@ def _run_one_method_and_save(
             seed=seed,
             scale=resolved_scale,
             n_jobs=n_jobs,
+            verbose=verbose,
         )
 
     # Isolated runs time the method in the parent, around the worker. The
@@ -409,6 +460,7 @@ def _fit_one_method_worker(payload: dict) -> dict:
         log_dir=payload["log_dir"],
         script_name=payload["script_name"],
         record_benchmark=payload.get("record_benchmark", True),
+        verbose=payload.get("verbose", False),
     )
     return {"tsv": str(tsv), "graph": str(graph) if graph is not None else None}
 
@@ -436,6 +488,7 @@ def run_dr_methods(
     seqid_path: Path | str | None = None,
     isolate: bool = False,
     on_failure: str = "continue",
+    verbose: bool = False,
 ) -> tuple[Path, list[Path]]:
     """
     Run selected DR methods for a single normalisation.
@@ -526,6 +579,7 @@ def run_dr_methods(
         "script_name": script_name,
         "matrix_path": str(matrix_path) if matrix_path is not None else None,
         "seqid_path": str(seqid_path) if seqid_path is not None else None,
+        "verbose": verbose,
     }
 
     for method in methods:
@@ -567,6 +621,7 @@ def run_dr_methods(
                     screen_grid=screen_grid,
                     log_dir=log_dir,
                     script_name=script_name,
+                    verbose=verbose,
                 )
                 embedding_paths.append(tsv)
                 if graph_file is not None:
@@ -614,6 +669,7 @@ def _run_parameter_screen(
     grid: str | None = None,
     log_dir: str | None = None,
     script_name: str | None = None,
+    verbose: bool = False,
 ) -> list[Path]:
     """
     Perform parameter screening for a given DR method.
@@ -710,6 +766,7 @@ def _run_parameter_screen(
         if method in SCREEN_AXES else (None, None)
     )
     default_axis2 = DR_HYPERPARAMS.get(method, {}).get("default", {}).get(axis2_name)
+    progress = _library_verbose_kwargs(method, verbose)
 
     if method == "umap":
         if axis2_vals is None:
@@ -719,7 +776,11 @@ def _run_parameter_screen(
                 kwargs = {"n_neighbors": n}
                 if default_axis2 is not None:
                     kwargs["min_dist"] = default_axis2
-                model = umap.UMAP(n_components=dims, n_jobs=n_jobs, **kwargs)
+                model = umap.UMAP(
+                    n_components=dims,
+                    n_jobs=n_jobs,
+                    **_with_library_verbose(method, verbose, kwargs),
+                )
                 embedding = timed_fit(f"n{n}", model)
                 save_and_track(embedding, f"n{n}", n, default_axis2 or 0)
                 info(f"{'n_neighbors=' + str(n):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")
@@ -728,7 +789,7 @@ def _run_parameter_screen(
             for n in axis1_vals:
                 for m in axis2_vals:
                     t0 = _time.perf_counter()
-                    model = umap.UMAP(n_components=dims, n_neighbors=n, min_dist=m, n_jobs=n_jobs)
+                    model = umap.UMAP(n_components=dims, n_neighbors=n, min_dist=m, n_jobs=n_jobs, **progress)
                     embedding = timed_fit(f"n{n}_min{m}", model)
                     save_and_track(embedding, f"n{n}_min{m}", n, m)
                     info(f"{'n_neighbors=' + str(n) + '  min_dist=' + str(m):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")
@@ -741,7 +802,13 @@ def _run_parameter_screen(
                 kwargs = {"perplexity": p}
                 if default_axis2 is not None:
                     kwargs["learning_rate"] = default_axis2
-                model = TSNE(n_components=dims, max_iter=1000, random_state=seed, n_jobs=n_jobs, **kwargs)
+                model = TSNE(
+                    n_components=dims,
+                    max_iter=1000,
+                    random_state=seed,
+                    n_jobs=n_jobs,
+                    **_with_library_verbose(method, verbose, kwargs),
+                )
                 embedding = timed_fit(f"p{p}", model)
                 save_and_track(embedding, f"p{p}", p, default_axis2 or 0)
                 info(f"{'perplexity=' + str(p):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")
@@ -751,7 +818,7 @@ def _run_parameter_screen(
                 for lr in axis2_vals:
                     t0 = _time.perf_counter()
                     model = TSNE(n_components=dims, perplexity=p, learning_rate=lr,
-                                 max_iter=1000, random_state=seed, n_jobs=n_jobs)
+                                 max_iter=1000, random_state=seed, n_jobs=n_jobs, **progress)
                     embedding = timed_fit(f"p{p}_lr{lr}", model)
                     save_and_track(embedding, f"p{p}_lr{lr}", p, lr)
                     info(f"{'perplexity=' + str(p) + '  learning_rate=' + str(lr):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")
@@ -764,7 +831,7 @@ def _run_parameter_screen(
                 kwargs = {"n_inliers": n}
                 if default_axis2 is not None:
                     kwargs["weight_temp"] = default_axis2
-                model = TRIMAP(n_dims=dims, **kwargs)
+                model = TRIMAP(n_dims=dims, **_with_library_verbose(method, verbose, kwargs))
                 embedding = timed_fit(f"inliers{n}", model)
                 save_and_track(embedding, f"inliers{n}", n, default_axis2 or 0)
                 info(f"{'n_inliers=' + str(n):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")
@@ -773,7 +840,7 @@ def _run_parameter_screen(
             for n in axis1_vals:
                 for w in axis2_vals:
                     t0 = _time.perf_counter()
-                    model = TRIMAP(n_dims=dims, n_inliers=n, weight_temp=w)
+                    model = TRIMAP(n_dims=dims, n_inliers=n, weight_temp=w, **progress)
                     embedding = timed_fit(f"inliers{n}_weighttemp{w}", model)
                     save_and_track(embedding, f"inliers{n}_weighttemp{w}", n, w)
                     info(f"{'n_inliers=' + str(n) + '  weight_temp=' + str(w):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")
@@ -786,7 +853,7 @@ def _run_parameter_screen(
                 kwargs = {"n_neighbors": n}
                 if default_axis2 is not None:
                     kwargs["FP_ratio"] = default_axis2
-                model = PaCMAP(n_components=dims, **kwargs)
+                model = PaCMAP(n_components=dims, **_with_library_verbose(method, verbose, kwargs))
                 embedding = timed_fit(f"n{n}", model)
                 save_and_track(embedding, f"n{n}", n, default_axis2 or 0)
                 info(f"{'n_neighbors=' + str(n):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")
@@ -795,7 +862,7 @@ def _run_parameter_screen(
             for n in axis1_vals:
                 for fp in axis2_vals:
                     t0 = _time.perf_counter()
-                    model = PaCMAP(n_components=dims, n_neighbors=n, FP_ratio=fp)
+                    model = PaCMAP(n_components=dims, n_neighbors=n, FP_ratio=fp, **progress)
                     embedding = timed_fit(f"n{n}_FPratio{fp}", model)
                     save_and_track(embedding, f"n{n}_FPratio{fp}", n, fp)
                     info(f"{'n_neighbors=' + str(n) + '  FP_ratio=' + str(fp):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")
@@ -808,7 +875,7 @@ def _run_parameter_screen(
                 kwargs = {"n_neighbors": n}
                 if default_axis2 is not None:
                     kwargs["FP_ratio"] = default_axis2
-                model = LocalMAP(n_components=dims, **kwargs)
+                model = LocalMAP(n_components=dims, **_with_library_verbose(method, verbose, kwargs))
                 embedding = timed_fit(f"n{n}", model)
                 save_and_track(embedding, f"n{n}", n, default_axis2 or 0)
                 info(f"{'n_neighbors=' + str(n):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")
@@ -817,7 +884,7 @@ def _run_parameter_screen(
             for n in axis1_vals:
                 for fp in axis2_vals:
                     t0 = _time.perf_counter()
-                    model = LocalMAP(n_components=dims, n_neighbors=n, FP_ratio=fp)
+                    model = LocalMAP(n_components=dims, n_neighbors=n, FP_ratio=fp, **progress)
                     embedding = timed_fit(f"n{n}_FPratio{fp}", model)
                     save_and_track(embedding, f"n{n}_FPratio{fp}", n, fp)
                     info(f"{'n_neighbors=' + str(n) + '  FP_ratio=' + str(fp):<{pw}}  {_fmt_time(_time.perf_counter() - t0)}")

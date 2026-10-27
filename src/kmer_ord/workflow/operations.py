@@ -259,6 +259,7 @@ class DimensionalityReduction(Operation):
         max_memory_gb=None,
         threads=1,
         on_failure="continue",
+        verbose=False,
     ):
         self.methods = methods
         self.dims = dims
@@ -273,6 +274,7 @@ class DimensionalityReduction(Operation):
         self.max_memory_gb = max_memory_gb
         self.threads = threads
         self.on_failure = on_failure
+        self.verbose = verbose
 
     def run(self, context):
         import numpy as np
@@ -386,6 +388,7 @@ class DimensionalityReduction(Operation):
                     # on_failure: continue skips it, abort stops the run.
                     isolate=True,
                     on_failure=self.on_failure,
+                    verbose=self.verbose,
                 )
 
             merged_outputs.append(merged_file)
