@@ -251,7 +251,7 @@ def run_pipeline(
     ),
     verbose: bool = typer.Option(
         False, "-v", "--verbose",
-        help="Show full rDNA-miner and Tiara logs. The default is a short progress summary.",
+        help="Show full rDNA-miner and Tiara logs, and library progress from dimensionality reduction. The default is a short summary.",
     ),
 ):
     """
@@ -346,7 +346,8 @@ def run_pipeline(
             screen_range2=screen_range2,
             screen_grid=screen_grid,
             threads=threads,
-            on_failure=dr_on_failure,),
+            on_failure=dr_on_failure,
+            verbose=verbose,),
         FeatureMerge(),
         SpatialiteDatabase()]
 
@@ -389,7 +390,11 @@ def discover_pipeline(
     dbscan_sweep: bool = typer.Option(False, "--dbscan-sweep", help="Run DBSCAN eps sweep"),
     threads: int = typer.Option(4, "-t", "--threads"),
     force: bool = typer.Option(False, "-f", "--force"),
-    db_path: Path = typer.Option(None, "--db", help="Optional path to existing SQLite/SpatiaLite DB"),):
+    db_path: Path = typer.Option(None, "--db", help="Optional path to existing SQLite/SpatiaLite DB"),
+    verbose: bool = typer.Option(
+        False, "-v", "--verbose",
+        help="Show library progress from dimensionality reduction. The default is a short summary.",
+    ),):
     """
     [+] Cluster inference pipeline :
     Construct a high-dimensional embedding of k-mer feature space
@@ -454,7 +459,8 @@ def discover_pipeline(
             screen_range2=screen_range2,
             screen_grid=screen_grid,
             threads=threads,
-            on_failure=dr_on_failure,)]
+            on_failure=dr_on_failure,
+            verbose=verbose,)]
 
     # -----------------------------
     # Clustering operations
@@ -789,6 +795,10 @@ def dr_cmd(
         "continue", "--dr-on-failure", click_type=_DR_ON_FAILURE, help=_DR_ON_FAILURE_HELP
     ),
     threads: int = typer.Option(4, "-t","--threads", help="Number of threads"),
+    verbose: bool = typer.Option(
+        False, "-v", "--verbose",
+        help="Show library progress from dimensionality reduction. The default is a short summary.",
+    ),
 ):
     """
     Run dimensionality reduction on an existing k-mer matrix.
@@ -828,6 +838,7 @@ def dr_cmd(
             screen_grid=screen_grid,
             threads=threads,
             on_failure=dr_on_failure,
+            verbose=verbose,
         ),
     ]
 
