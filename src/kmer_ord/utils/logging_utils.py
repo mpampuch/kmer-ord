@@ -1,3 +1,6 @@
+import os
+import re
+import subprocess
 from pathlib import Path
 
 from rich.console import Console
@@ -80,3 +83,58 @@ def warn(message: str) -> None:
 
 def divider() -> None:
     console.print("    " + "─" * 52, style="Dim")
+
+
+# tqdm redraws the current line with carriage returns. A pipe delivers those
+# updates as one chunk, and writing them would fill the run log with bars.
+_PROGRESS_BAR = re.compile(r"^\s*\d+%\|")
+
+
+def _iter_log_lines(stream):
+    for chunk in stream:
+        for piece in str(chunk).split("\n"):
+            # A trailing \r is the newline half of \r\n, not a redraw.
+            piece = piece.rstrip("\r")
+            if "\r" in piece:
+                piece = piece.rsplit("\r", 1)[-1]
+            if not piece.strip() or _PROGRESS_BAR.match(piece):
+                continue
+            yield piece
+
+
+def run_logged_command(cmd, *, check: bool = False, verbose: bool = False, keep=None) -> int:
+    """Run cmd and copy its output onto the kmer-ord console.
+
+    The command should include ``conda run --no-capture-output`` so conda
+    does not hold the child's output until it exits. PYTHONUNBUFFERED makes
+    Python children flush each print through the pipe.
+
+    ``verbose`` prints every complete line. Otherwise ``keep(line)`` decides,
+    and ``keep=None`` keeps every complete line. Progress-bar redraws are
+    always dropped. Returns the exit code. ``check=True`` raises
+    ``CalledProcessError`` after the stream has been printed.
+    """
+    env = os.environ.copy()
+    env["PYTHONUNBUFFERED"] = "1"
+    proc = subprocess.Popen(
+        list(cmd),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        env=env,
+    )
+    stream = proc.stdout
+    if stream is None:
+        raise RuntimeError("logged command was started without a stdout pipe")
+    try:
+        for line in _iter_log_lines(stream):
+            if verbose or keep is None or keep(line):
+                console.print(line, markup=False, highlight=False)
+    finally:
+        if hasattr(stream, "read"):
+            stream.read()
+        code = proc.wait()
+    if check and code != 0:
+        raise subprocess.CalledProcessError(code, cmd)
+    return code

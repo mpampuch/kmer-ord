@@ -1,9 +1,21 @@
 #src/kmer_ord/io/run_rdna.py
+import re
 from pathlib import Path
-import subprocess
 import pandas as pd
 from kmer_ord.system.env_manager import RDNA_ENV
-from kmer_ord.utils.logging_utils import section, warn, info
+from kmer_ord.utils.logging_utils import run_logged_command, section, warn, info
+
+# Stage rules look like "[1/7] Run Barrnap". The other child lines are
+# command invocations, path checks, and the artifact dump.
+_STAGE_RULE = re.compile(r"\[\d+/\d+\]")
+_RDNA_ALERT = ("terminat", "no rdna", "warn", "error", "traceback")
+
+
+def _rdna_summary_line(line: str) -> bool:
+    if _STAGE_RULE.search(line):
+        return True
+    lowered = line.lower()
+    return any(token in lowered for token in _RDNA_ALERT)
 
 RDNA_COLUMNS = {
     "domain_clean": "rdna_domain",
@@ -27,6 +39,7 @@ def run_rdna_miner(
     pr2_db=None,
     silva_db=None,
     force=False,
+    verbose=False,
 ):
     """
     Run rDNA-miner (barrnap -> Flye assembly -> Rfam/cmscan -> DECIPHER ->
@@ -49,7 +62,7 @@ def run_rdna_miner(
     output_dir = Path(output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    cmd = ["conda", "run", "-n", RDNA_ENV, "rdna-miner", "long-read",
+    cmd = ["conda", "run", "--no-capture-output", "-n", RDNA_ENV, "rdna-miner", "long-read",
            "-i", str(input_file),
            "-o", str(output_dir),
            "-t", str(threads),
@@ -66,9 +79,25 @@ def run_rdna_miner(
     if force:
         cmd.append("--force")
 
-    result = subprocess.run(cmd, capture_output=True, text=True)
-    if result.returncode != 0:
-        warn(f"rDNA-miner failed; continuing without rDNA features.\n{result.stderr}")
+    # The summary filter hides command lines. Remember the last child line so
+    # a failure that did not match an alert still names what went wrong.
+    tail = {"last": None, "showed_alert": False}
+
+    def keep(line: str) -> bool:
+        stripped = line.strip()
+        if stripped:
+            tail["last"] = stripped
+        showed = _rdna_summary_line(line)
+        if showed and any(token in line.lower() for token in _RDNA_ALERT):
+            tail["showed_alert"] = True
+        return showed
+
+    code = run_logged_command(cmd, verbose=verbose, keep=keep)
+    if code != 0:
+        message = "rDNA-miner failed; continuing without rDNA features."
+        if not verbose and not tail["showed_alert"] and tail["last"]:
+            message = f"{message} {tail['last']}"
+        warn(message)
         return None
 
     taxonomy_file = output_dir / "taxonomy" / f"{input_file.stem}_taxa_ssu_reads.tsv"
