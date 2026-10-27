@@ -1,4 +1,6 @@
 # src/kmer_ord/dr/preprocess.py
+from dataclasses import dataclass
+
 import pandas as pd
 
 # Tuple of normalization methods accepted by preprocess_data.
@@ -160,6 +162,117 @@ def resolve_ipca_batch_size(
     return _ipca_fit_plan(n_samples, n_features, keep_pcs, batch_size)[1]
 
 
+@dataclass(frozen=True)
+class IpcaBatchReport:
+    """One pass (fit or transform) over the matrix in row batches."""
+
+    slices: tuple[slice, ...]
+    batch_size: int
+    # "full", "short", or "merged". Merged means sklearn folded a remainder
+    # smaller than n_components into the previous batch.
+    handling: str
+    n_components: int
+    remainder: int | None = None
+
+    @property
+    def n_batches(self) -> int:
+        return len(self.slices)
+
+    @property
+    def last_rows(self) -> int:
+        last = self.slices[-1]
+        return last.stop - last.start
+
+
+def _row_batch_slices(n_samples: int, batch_size: int) -> tuple[slice, ...]:
+    """Plain tail slices. A short last batch stays short.
+
+    This is the transform loop. It is not sklearn's fit rule: transform does
+    not require each batch to hold at least n_components.
+    """
+    return tuple(
+        slice(start, min(start + batch_size, n_samples))
+        for start in range(0, n_samples, batch_size)
+    )
+
+
+def _classify_batches(
+    slices: tuple[slice, ...],
+    batch_size: int,
+    n_components: int,
+) -> IpcaBatchReport:
+    if not slices:
+        raise ValueError("IPCA batch report needs at least one row")
+    last_rows = slices[-1].stop - slices[-1].start
+    remainder = None
+    if last_rows == batch_size:
+        handling = "full"
+    elif last_rows < batch_size:
+        handling = "short"
+    else:
+        # gen_batches only absorbs one short tail onto the previous batch,
+        # so the extra rows are the remainder that was too small to fit alone.
+        handling = "merged"
+        remainder = last_rows - batch_size
+    return IpcaBatchReport(
+        slices=slices,
+        batch_size=batch_size,
+        handling=handling,
+        n_components=n_components,
+        remainder=remainder,
+    )
+
+
+def describe_ipca_batches(
+    n_samples: int,
+    n_features: int,
+    keep_pcs: int | None,
+    keep_variance: float | None,
+    batch_size: int | None,
+) -> tuple[IpcaBatchReport, IpcaBatchReport]:
+    """Fit and transform batch plans for the batch size IncrementalPCA will use.
+
+    Fit slices come from sklearn.utils.gen_batches with min_batch_size set to
+    the component count being fit. When the remainder is smaller than that
+    count, sklearn folds it into the previous batch: the last fit batch is
+    then larger than batch_size, and the fit count is one lower than the
+    transform count. The variance threshold does not change this plan.
+    """
+    from sklearn.utils import gen_batches
+
+    del keep_variance
+    n_fit, batch_size = _ipca_fit_plan(
+        n_samples, n_features, keep_pcs, batch_size
+    )
+    fit_slices = tuple(
+        gen_batches(n_samples, batch_size, min_batch_size=n_fit)
+    )
+    return (
+        _classify_batches(fit_slices, batch_size, n_fit),
+        _classify_batches(_row_batch_slices(n_samples, batch_size), batch_size, n_fit),
+    )
+
+
+def format_ipca_batch_line(kind: str, report: IpcaBatchReport) -> str:
+    """One console/log line: batch count, last-batch rows, and how it was handled."""
+    noun = "batch" if report.n_batches == 1 else "batches"
+    if report.handling == "full":
+        detail = "full"
+    elif report.handling == "short":
+        detail = "short remainder"
+    elif report.handling == "merged":
+        detail = (
+            f"merged (remainder {report.remainder:,} is below "
+            f"{report.n_components:,} components)"
+        )
+    else:
+        raise ValueError(f"Unknown IPCA batch handling: {report.handling}")
+    return (
+        f"{'ipca ' + kind:<16}  {report.n_batches:,} {noun}; "
+        f"last {report.last_rows:,} rows, {detail}"
+    )
+
+
 def _incremental_pca(X, keep_pcs, keep_variance, batch_size):
     """
     Apply Incremental PCA to reduce X using either a fixed number of
@@ -184,9 +297,9 @@ def _incremental_pca(X, keep_pcs, keep_variance, batch_size):
         keep_pcs = int(np.searchsorted(cumulative_variance, keep_variance) + 1)
     keep_pcs = min(keep_pcs, n_fit)
 
-    # transform in batches so no full-matrix RAM allocation is created
+    # transform in batches so no full-matrix RAM allocation is created.
+    # These slices stay a plain tail; they do not use the fit-time merge.
     out = np.empty((n_samples, keep_pcs), dtype=np.float32)
-    for start in range(0, n_samples, batch_size):
-        stop = min(start + batch_size, n_samples)
-        out[start:stop] = ipca.transform(X[start:stop])[:, :keep_pcs]
+    for batch in _row_batch_slices(n_samples, batch_size):
+        out[batch] = ipca.transform(X[batch])[:, :keep_pcs]
     return out

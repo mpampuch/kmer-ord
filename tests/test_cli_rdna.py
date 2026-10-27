@@ -157,16 +157,11 @@ def test_project_warns_when_db_flags_set_without_rdna(monkeypatch, tmp_path):
 def _capture_rdna_cmd(monkeypatch):
     calls = []
 
-    def fake_run(cmd, capture_output=True, text=True, **kwargs):
+    def fake_run(cmd, check=False, verbose=False, keep=None):
         calls.append(list(cmd))
+        return 1
 
-        class Result:
-            returncode = 1
-            stderr = "stopped in test"
-
-        return Result()
-
-    monkeypatch.setattr("kmer_ord.io.run_rdna.subprocess.run", fake_run)
+    monkeypatch.setattr("kmer_ord.io.run_rdna.run_logged_command", fake_run)
     return calls
 
 
@@ -176,7 +171,7 @@ def test_run_rdna_miner_forwards_db_flags_and_force(monkeypatch, tmp_path):
     rfam = tmp_path / "rfam"
     pr2 = tmp_path / "pr2"
     silva = tmp_path / "silva"
-    run_rdna_miner(
+    result = run_rdna_miner(
         input_file=tmp_path / "reads.fasta",
         output_dir=tmp_path / "raw",
         feature_file=tmp_path / "features.tsv",
@@ -188,23 +183,32 @@ def test_run_rdna_miner_forwards_db_flags_and_force(monkeypatch, tmp_path):
         silva_db=silva,
         force=True,
     )
+    assert result is None
     cmd = calls[0]
     assert cmd[cmd.index("--db-dir") + 1] == str(db)
     assert cmd[cmd.index("--rfam-db") + 1] == str(rfam)
     assert cmd[cmd.index("--pr2-db") + 1] == str(pr2)
     assert cmd[cmd.index("--silva-db") + 1] == str(silva)
+    assert "--no-capture-output" in cmd
     assert "--force" in cmd
     assert "long-read" in cmd
 
 
 def test_run_rdna_miner_omits_unset_db_flags(monkeypatch, tmp_path):
     calls = _capture_rdna_cmd(monkeypatch)
-    run_rdna_miner(
+
+    def fail_if_taxonomy_is_read(*args, **kwargs):
+        raise AssertionError("taxonomy table was read after a failed rDNA-miner run")
+
+    monkeypatch.setattr("kmer_ord.io.run_rdna.pd.read_csv", fail_if_taxonomy_is_read)
+    result = run_rdna_miner(
         input_file=tmp_path / "reads.fasta",
         output_dir=tmp_path / "raw",
         feature_file=tmp_path / "features.tsv",
     )
+    assert result is None
     cmd = calls[0]
+    assert "--no-capture-output" in cmd
     for flag in ("--db-dir", "--rfam-db", "--pr2-db", "--silva-db", "--force"):
         assert flag not in cmd
 
@@ -235,3 +239,4 @@ def test_rdna_operation_passes_force_and_db_paths(monkeypatch, tmp_path):
     assert captured["silva_db"] is None
     assert captured["threads"] == 3
     assert captured["platform"] == "ont"
+    assert captured["verbose"] is False

@@ -249,6 +249,10 @@ def run_pipeline(
         "--rdna-silva-db",
         "Override path to the SILVA database directory.",
     ),
+    verbose: bool = typer.Option(
+        False, "-v", "--verbose",
+        help="Show full rDNA-miner and Tiara logs. The default is a short progress summary.",
+    ),
 ):
     """
     [+] Projection pipeline:
@@ -290,7 +294,7 @@ def run_pipeline(
 
     if run_tiara:
         info("Tiara classification enabled.")
-        operations.append(Tiara(threads=threads))
+        operations.append(Tiara(threads=threads, verbose=verbose))
     else:
         info("Tiara classification skipped (pass --tiara to enable).")
 
@@ -303,6 +307,7 @@ def run_pipeline(
             rfam_db=rdna_rfam_db,
             pr2_db=rdna_pr2_db,
             silva_db=rdna_silva_db,
+            verbose=verbose,
         ))
     else:
         info("rDNA-miner classification skipped (pass --rDNA to enable).")
@@ -480,6 +485,8 @@ def discover_pipeline(
     _print_footer(start_time)
 
 
+# American spelling is a hidden alias; benchmark rows stay under script_name "visualise".
+@app.command("visualize", rich_help_panel="Analysis", hidden=True)
 @app.command("visualise", rich_help_panel="Analysis")
 def visualise_db(
     db_path: Path = typer.Option(..., "-d", "--db", help="Path to the SQLite/SpatiaLite database"),
@@ -488,7 +495,7 @@ def visualise_db(
     embedding_mode: str = typer.Option("all", "--embedding-mode", help="Embedding plot mode: density, categorical, continuous, all"),
     features: bool = typer.Option(True, "--features/--no-features", help="Generate feature plots")):
     """
-    Visualise database tables.
+    Visualise database tables. `visualize` is an accepted alias.
     - Feature distributions and categorical comparisons
     - Embedding visualisations (UMAP, t-SNE, etc.)
     - Parameter-screen feature grids, when dr/<normalisation>/<method>/parameter_screen/ exists beside the database
@@ -859,7 +866,11 @@ def run_tiara_cmd(
     input: Path = typer.Option(..., "-i","--input", help="Input fasta file"),
     output_dir: Path = typer.Option(..., "-o","--output", help="Output directory"),
     threads: int = typer.Option(1, "-t", help="Number of threads"),
-    force: bool = typer.Option(False, "-f", "--force", help="Recompute even if output exists"),):
+    force: bool = typer.Option(False, "-f", "--force", help="Recompute even if output exists"),
+    verbose: bool = typer.Option(
+        False, "-v", "--verbose",
+        help="Show the full Tiara log. The default is a short classification summary.",
+    ),):
     """
     Run Tiara classification on a fasta file.
     """
@@ -868,7 +879,7 @@ def run_tiara_cmd(
 
     context = Context(input, output_dir, force=force, threads=threads)
 
-    operation = Tiara(threads=threads)
+    operation = Tiara(threads=threads, verbose=verbose)
     operation.run(context)
 
     info(f"Tiara output saved at: {context.get('tiara')}")
@@ -896,6 +907,10 @@ def run_rdna_cmd(
     rdna_silva_db: Optional[Path] = _existing_rdna_dir(
         "--rdna-silva-db",
         "Override path to the SILVA database directory.",
+    ),
+    verbose: bool = typer.Option(
+        False, "-v", "--verbose",
+        help="Show the full rDNA-miner log. The default is the stage summary.",
     ),):
     """
     Run rDNA-miner (extract, assemble and classify rDNA reads) on a fasta file.
@@ -912,6 +927,7 @@ def run_rdna_cmd(
         rfam_db=rdna_rfam_db,
         pr2_db=rdna_pr2_db,
         silva_db=rdna_silva_db,
+        verbose=verbose,
     )
     operation.run(context)
 

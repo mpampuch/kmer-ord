@@ -9,8 +9,11 @@ import numpy as np
 import pandas as pd
 import pytest
 from sklearn.decomposition import PCA
+from sklearn.utils import gen_batches
 
 from kmer_ord.dr.preprocess import (
+    describe_ipca_batches,
+    format_ipca_batch_line,
     preprocess_data,
     reduce_dimensions_with_pca,
     resolve_ipca_batch_size,
@@ -114,6 +117,81 @@ def test_resolve_ipca_batch_size_default_and_floor():
     assert resolve_ipca_batch_size(2000, 2000, keep_pcs=None, keep_variance=0.9, batch_size=None) == max(2048, 5 * 500)
 
 
+def test_ipca_batch_report_full_short_merged_and_single():
+    # Exact division: every batch, including the last, is a full batch.
+    full_fit, full_transform = describe_ipca_batches(
+        4096, 200, keep_pcs=100, keep_variance=None, batch_size=2048
+    )
+    assert list(full_fit.slices) == list(gen_batches(4096, 2048, min_batch_size=100))
+    assert full_fit.n_batches == 2 and full_fit.last_rows == 2048
+    assert full_fit.handling == "full"
+    assert full_transform.handling == "full" and full_transform.n_batches == 2
+    assert format_ipca_batch_line("fit", full_fit) == (
+        "ipca fit          2 batches; last 2,048 rows, full"
+    )
+
+    # Remainder 1,808 is at least 100 components, so it stays its own short batch.
+    short_fit, short_transform = describe_ipca_batches(
+        10_000, 200, keep_pcs=100, keep_variance=None, batch_size=2048
+    )
+    assert list(short_fit.slices) == list(gen_batches(10_000, 2048, min_batch_size=100))
+    assert short_fit.n_batches == 5 and short_fit.last_rows == 1808
+    assert short_fit.handling == "short"
+    assert short_transform.n_batches == 5 and short_transform.last_rows == 1808
+    assert format_ipca_batch_line("fit", short_fit) == (
+        "ipca fit          5 batches; last 1,808 rows, short remainder"
+    )
+    assert format_ipca_batch_line("transform", short_transform) == (
+        "ipca transform    5 batches; last 1,808 rows, short remainder"
+    )
+
+    # Remainder 1,808 is below 1,900 components, so sklearn merges it into the
+    # previous batch: one fewer fit batch, and that last batch is larger than
+    # the batch size. Transform still keeps the short tail.
+    merged_fit, merged_transform = describe_ipca_batches(
+        10_000, 2000, keep_pcs=1900, keep_variance=None, batch_size=2048
+    )
+    assert list(merged_fit.slices) == list(gen_batches(10_000, 2048, min_batch_size=1900))
+    assert merged_fit.n_batches == merged_transform.n_batches - 1
+    assert merged_fit.n_batches == 4
+    assert merged_fit.last_rows == 3856 and merged_fit.last_rows > 2048
+    assert merged_fit.handling == "merged" and merged_fit.remainder == 1808
+    assert merged_transform.n_batches == 5 and merged_transform.handling == "short"
+    assert format_ipca_batch_line("fit", merged_fit) == (
+        "ipca fit          4 batches; last 3,856 rows, merged "
+        "(remainder 1,808 is below 1,900 components)"
+    )
+    assert format_ipca_batch_line("transform", merged_transform) == (
+        "ipca transform    5 batches; last 1,808 rows, short remainder"
+    )
+
+    # The whole matrix is smaller than the batch size: one short batch of every row.
+    single_fit, single_transform = describe_ipca_batches(
+        80, 20, keep_pcs=5, keep_variance=None, batch_size=2048
+    )
+    assert list(single_fit.slices) == list(gen_batches(80, 2048, min_batch_size=5))
+    assert single_fit.n_batches == 1 and single_fit.last_rows == 80
+    assert single_fit.handling == "short"
+    assert single_transform.n_batches == 1 and single_transform.last_rows == 80
+    assert format_ipca_batch_line("fit", single_fit) == (
+        "ipca fit          1 batch; last 80 rows, short remainder"
+    )
+
+    # Variance selection fits at most 500 components first, so the threshold
+    # does not change the batch plan versus asking for those 500 components.
+    variance_fit, _ = describe_ipca_batches(
+        2000, 2000, keep_pcs=None, keep_variance=0.9, batch_size=None
+    )
+    capped_fit, _ = describe_ipca_batches(
+        2000, 2000, keep_pcs=500, keep_variance=None, batch_size=None
+    )
+    assert variance_fit.slices == capped_fit.slices
+    assert variance_fit.batch_size == max(2048, 5 * 500)
+    assert list(variance_fit.slices) == list(
+        gen_batches(2000, variance_fit.batch_size, min_batch_size=500)
+    )
+
+
 def test_pca_ignores_batch_size(clr_matrix):
     expected = reduce_dimensions_with_pca(clr_matrix, keep_pcs=3, method="pca")
     result = reduce_dimensions_with_pca(
@@ -144,4 +222,5 @@ def test_cli_pca_pre_method_help_lists_choices():
     assert "--pca-pre-method" in result.output
     assert "pca" in result.output
     assert "ipca" in result.output
-    assert "--pca-pre-batch-size" in result.output
+    # An 80-column help table ellipsizes this flag to "--pca-pre-batch-…".
+    assert "--pca-pre-batch" in result.output

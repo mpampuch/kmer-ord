@@ -83,9 +83,10 @@ class KmerCount(Operation):
 from kmer_ord.dr.loader import load_matrix
 from kmer_ord.dr.preprocess import (
     NORMALISATION_METHODS,
+    describe_ipca_batches,
+    format_ipca_batch_line,
     preprocess_data,
     reduce_dimensions_with_pca,
-    resolve_ipca_batch_size,
 )
 from kmer_ord.dr.methods import run_dr_methods
 from kmer_ord.utils.logging_utils import section, info
@@ -166,16 +167,22 @@ class MatrixPreprocessing(Operation):
             )
             batch_note = ""
             resolved_batch = self.pca_batch_size
+            fit_batches = None
+            transform_batches = None
             if self.pca_method == "ipca":
-                resolved_batch = resolve_ipca_batch_size(
+                fit_batches, transform_batches = describe_ipca_batches(
                     matrix.shape[0],
                     matrix.shape[1],
                     self.keep_pcs,
                     self.keep_variance,
                     self.pca_batch_size,
                 )
+                resolved_batch = fit_batches.batch_size
                 batch_note = f", batch {resolved_batch:,}"
             info(f"{'pca-pre':<{w}}  {self.pca_method}  (keep {pca_target}{batch_note})")
+            if fit_batches is not None:
+                info(format_ipca_batch_line("fit", fit_batches))
+                info(format_ipca_batch_line("transform", transform_batches))
 
         for norm in normalisations:
             # -----------------------------
@@ -430,8 +437,9 @@ class Tiara(Operation):
     requires = ["fasta"]
     produces = ["tiara"]
 
-    def __init__(self, threads=1):
+    def __init__(self, threads=1, verbose=False):
         self.threads = threads
+        self.verbose = verbose
 
     def run(self, context):
         input_fasta = context.get("fasta")
@@ -451,7 +459,8 @@ class Tiara(Operation):
             else:
                 run_tiara(input_file=input_fasta,
                           output_file=output_file,
-                          threads=self.threads)
+                          threads=self.threads,
+                          verbose=self.verbose)
 
         context.register("tiara", output_file)
 
@@ -462,13 +471,14 @@ class RDNAMiner(Operation):
     produces = ["rdna"]
 
     def __init__(self, threads=1, platform="auto", db_dir=None, rfam_db=None,
-                 pr2_db=None, silva_db=None):
+                 pr2_db=None, silva_db=None, verbose=False):
         self.threads = threads
         self.platform = platform
         self.db_dir = db_dir
         self.rfam_db = rfam_db
         self.pr2_db = pr2_db
         self.silva_db = silva_db
+        self.verbose = verbose
 
     def run(self, context):
         input_fasta = context.get("fasta")
@@ -510,7 +520,8 @@ class RDNAMiner(Operation):
                                 rfam_db=self.rfam_db,
                                 pr2_db=self.pr2_db,
                                 silva_db=self.silva_db,
-                                force=context.force)
+                                force=context.force,
+                                verbose=self.verbose)
 
         if feature_file.exists():
             context.register("rdna", feature_file)

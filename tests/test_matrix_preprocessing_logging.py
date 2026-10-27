@@ -69,6 +69,33 @@ def test_preprocessing_logs_pca_pre_result(matrix_tsv, tmp_path):
     assert "3" in output  # retained-component count is reported
 
 
+def test_preprocessing_logs_ipca_batch_counts(matrix_tsv, tmp_path):
+    """20 rows, batch 16, 5 components: the 4-row tail is below 5 components.
+
+    Fit merges that tail into the previous batch (1 batch of 20). Transform
+    keeps the tail as its own short batch (2 batches, last 4 rows).
+    """
+    output = _run_capturing(
+        MatrixPreprocessing(
+            normalisations=("clr",),
+            pca_dim_red=True,
+            keep_pcs=5,
+            pca_method="ipca",
+            pca_batch_size=16,
+        ),
+        matrix_tsv,
+        tmp_path / "out",
+        force=True,
+    )
+    # Rich wraps the fit line on an 80-column console, so compare the words
+    # rather than one physical line. Exact spacing is covered in test_pca_pre.
+    flat = " ".join(output.split())
+    assert (
+        "1 batch; last 20 rows, merged (remainder 4 is below 5 components)"
+    ) in flat
+    assert "2 batches; last 4 rows, short remainder" in flat
+
+
 def test_norm_all_expands_to_all_normalisations(matrix_tsv, tmp_path):
     """--norm all previously hit a NameError (undefined ALL_METHODS) and,
     even if imported, would have expanded to DR method names."""
