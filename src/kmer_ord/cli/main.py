@@ -98,6 +98,23 @@ def _validate_pca_pre_flags(pca_pre: bool, keep_pcs, keep_variance) -> None:
         )
 
 
+def _validate_screen_flags(values1, values2, range1, range2) -> None:
+    """Fail fast at the CLI. A spec without method= is accepted by Typer
+    and then ignored when the grid is built, so the screen runs on the
+    default range."""
+    from kmer_ord.dr.screen_grid import validate_screen_specs
+
+    try:
+        validate_screen_specs(
+            values1=values1,
+            values2=values2,
+            range1=range1,
+            range2=range2,
+        )
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
 #----- header util
 
 def print_header(start_time):
@@ -221,7 +238,7 @@ def run_pipeline(
     screen_values1: List[str] = typer.Option([], "--screen_values1", help="Explicit axis-1 (count-like) values per method: 'method=v1,v2,...' or 'all=v1,v2,...'. Repeatable."),
     screen_values2: List[str] = typer.Option([], "--screen_values2", help="Explicit axis-2 values per method: 'method=v1,v2,...'. Repeatable."),
     screen_range1: List[str] = typer.Option([], "--screen_range1", help="Axis-1 range for auto-generated grids: 'method=min,max' or 'all=min,max'. Repeatable."),
-    screen_range2: List[str] = typer.Option([], "--screen_range2", help="Axis-2 range for auto-generated grids: 'method=min,max'. Repeatable."),
+    screen_range2: List[str] = typer.Option([], "--screen_range2", help="Axis-2 range for auto-generated grids: 'method=min,max' or 'all=min,max'. Repeatable."),
     screen_grid: Optional[str] = typer.Option(None, "--screen_grid", help="Grid size for auto-generated screens: 'N' (1D) or 'NxM' (2D). Applies to every screened method."),
     dr_on_failure: str = typer.Option(
         "continue", "--dr-on-failure", click_type=_DR_ON_FAILURE, help=_DR_ON_FAILURE_HELP
@@ -263,6 +280,7 @@ def run_pipeline(
     | fastq -> fasta -> sequence stats -> kmer-counting -> [tiara] -> [rDNA] -> DR -> database |
     """
     _validate_pca_pre_flags(pca_pre, keep_pcs, keep_variance)
+    _validate_screen_flags(screen_values1, screen_values2, screen_range1, screen_range2)
     start_time = datetime.datetime.now()
     enable_run_log(output_dir / "kmer-ord.log")
     print_header(start_time)
@@ -378,7 +396,7 @@ def discover_pipeline(
     screen_values1: List[str] = typer.Option([], "--screen_values1", help="Explicit axis-1 (count-like) values per method: 'method=v1,v2,...' or 'all=v1,v2,...'. Repeatable."),
     screen_values2: List[str] = typer.Option([], "--screen_values2", help="Explicit axis-2 values per method: 'method=v1,v2,...'. Repeatable."),
     screen_range1: List[str] = typer.Option([], "--screen_range1", help="Axis-1 range for auto-generated grids: 'method=min,max' or 'all=min,max'. Repeatable."),
-    screen_range2: List[str] = typer.Option([], "--screen_range2", help="Axis-2 range for auto-generated grids: 'method=min,max'. Repeatable."),
+    screen_range2: List[str] = typer.Option([], "--screen_range2", help="Axis-2 range for auto-generated grids: 'method=min,max' or 'all=min,max'. Repeatable."),
     screen_grid: Optional[str] = typer.Option(None, "--screen_grid", help="Grid size for auto-generated screens: 'N' (1D) or 'NxM' (2D). Applies to every screened method."),
     dr_on_failure: str = typer.Option(
         "continue", "--dr-on-failure", click_type=_DR_ON_FAILURE, help=_DR_ON_FAILURE_HELP
@@ -404,6 +422,7 @@ def discover_pipeline(
     | kmer-profiles -> High-D embedding -> clustering -> database |
     """
     _validate_pca_pre_flags(pca_pre, keep_pcs, keep_variance)
+    _validate_screen_flags(screen_values1, screen_values2, screen_range1, screen_range2)
     start_time = datetime.datetime.now()
     enable_run_log(output_dir / "kmer-ord.log")
     print_header(start_time)
@@ -789,7 +808,7 @@ def dr_cmd(
     screen_values1: List[str] = typer.Option([], "--screen_values1", help="Explicit axis-1 (count-like) values per method: 'method=v1,v2,...' or 'all=v1,v2,...'. Repeatable."),
     screen_values2: List[str] = typer.Option([], "--screen_values2", help="Explicit axis-2 values per method: 'method=v1,v2,...'. Repeatable."),
     screen_range1: List[str] = typer.Option([], "--screen_range1", help="Axis-1 range for auto-generated grids: 'method=min,max' or 'all=min,max'. Repeatable."),
-    screen_range2: List[str] = typer.Option([], "--screen_range2", help="Axis-2 range for auto-generated grids: 'method=min,max'. Repeatable."),
+    screen_range2: List[str] = typer.Option([], "--screen_range2", help="Axis-2 range for auto-generated grids: 'method=min,max' or 'all=min,max'. Repeatable."),
     screen_grid: Optional[str] = typer.Option(None, "--screen_grid", help="Grid size for auto-generated screens: 'N' (1D) or 'NxM' (2D). Applies to every screened method."),
     dr_on_failure: str = typer.Option(
         "continue", "--dr-on-failure", click_type=_DR_ON_FAILURE, help=_DR_ON_FAILURE_HELP
@@ -803,8 +822,9 @@ def dr_cmd(
     """
     Run dimensionality reduction on an existing k-mer matrix.
     """
-    enable_run_log(output_dir / "kmer-ord.log")
     _validate_pca_pre_flags(pca_pre, keep_pcs, keep_variance)
+    _validate_screen_flags(screen_values1, screen_values2, screen_range1, screen_range2)
+    enable_run_log(output_dir / "kmer-ord.log")
     set_global_threads(threads)
     info(f"Using {threads} threads")
 
