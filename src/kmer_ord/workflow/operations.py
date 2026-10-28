@@ -8,7 +8,7 @@ import typer
 
 from kmer_ord.io.summary import calculate_stats
 from kmer_ord.io.kmer_counter import run_kmer_counter
-from kmer_ord.io.run_tiara import run_tiara
+from kmer_ord.io.run_tiara import add_class_combined, run_tiara
 from kmer_ord.io.run_rdna import run_rdna_miner
 from .operation import Operation
 
@@ -561,6 +561,10 @@ class FeatureMerge(Operation):
 
             if tiara_path:
                 tiara_df = normalize_id_column(pd.read_csv(tiara_path, sep="\t"))
+                # Cached Tiara TSVs only have the two stage columns. Derive
+                # class_combined here so one plot can show both stages, and
+                # recompute it when an older combined column is already present.
+                tiara_df = add_class_combined(tiara_df)
                 merged = merged.merge(tiara_df, on="sequence_id", how="left")
 
             #merge rdna-miner taxonomy based on sequence_id, if exists
