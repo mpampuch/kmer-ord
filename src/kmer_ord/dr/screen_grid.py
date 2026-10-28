@@ -39,6 +39,70 @@ def _parse_specs(entries: list[str] | None) -> dict[str, str]:
     return out
 
 
+def _screen_spec_form(flag: str) -> str:
+    if flag.startswith("--screen_range"):
+        return "'method=min,max' or 'all=min,max'"
+    return "'method=v1,v2,...' or 'all=v1,v2,...'"
+
+
+def _validate_screen_entry(entry: str, flag: str) -> None:
+    """Reject a spec that grid lookup would store and then never apply.
+
+    Resolution only reads keys that are a screenable method or 'all'. A bare
+    '0.1,1.0' has no '=', so the whole token becomes the key and the range
+    is dropped.
+    """
+    form = _screen_spec_form(flag)
+    if "=" not in entry:
+        raise ValueError(f"{flag} {entry!r} must be {form}")
+
+    key, _, raw_value = entry.partition("=")
+    method = key.strip().lower()
+    value = raw_value.strip()
+    if not method or not value:
+        raise ValueError(f"{flag} {entry!r} must be {form}")
+
+    allowed = (*SCREEN_AXES, "all")
+    if method not in allowed:
+        names = ", ".join(allowed)
+        raise ValueError(
+            f"{flag} method {method!r} is not screenable; use one of {names}. "
+            f"Expected {form}."
+        )
+
+    parts = [part.strip() for part in value.split(",")]
+    if any(part == "" for part in parts):
+        raise ValueError(f"{flag} {entry!r} must be {form}")
+    try:
+        numbers = [float(part) for part in parts]
+    except ValueError as exc:
+        raise ValueError(f"{flag} {entry!r} must be {form}") from exc
+
+    if flag.startswith("--screen_range"):
+        if len(numbers) != 2 or not (numbers[0] < numbers[1]):
+            raise ValueError(
+                f"{flag} {entry!r} needs exactly two numbers with min < max. "
+                f"Expected {form}."
+            )
+
+
+def validate_screen_specs(
+    values1: list[str] | None = None,
+    values2: list[str] | None = None,
+    range1: list[str] | None = None,
+    range2: list[str] | None = None,
+) -> None:
+    """Fail on screen specs that would be ignored during grid resolution."""
+    for flag, entries in (
+        ("--screen_values1", values1),
+        ("--screen_values2", values2),
+        ("--screen_range1", range1),
+        ("--screen_range2", range2),
+    ):
+        for entry in entries or []:
+            _validate_screen_entry(entry, flag)
+
+
 def _parse_numbers(csv: str) -> list[float]:
     return [float(v) if ("." in v or "e" in v.lower()) else int(v)
             for v in csv.split(",") if v.strip()]
@@ -118,6 +182,12 @@ def resolve_method_grid(
 
     No overrides at all -> exact original hardcoded 2D grid, unchanged.
     """
+    validate_screen_specs(
+        values1=values1,
+        values2=values2,
+        range1=range1,
+        range2=range2,
+    )
     axis1_name, axis2_name = SCREEN_AXES[method]
 
     if not any([values1, values2, range1, range2, grid_spec]):

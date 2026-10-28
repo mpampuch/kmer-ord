@@ -78,6 +78,11 @@ def print_banner(host="127.0.0.1", port=8050):
 
 CLUSTER_COLS = []   # column names from the clustering table (populated at init)
 
+# Not a features-table column. The dropdown value is a sentinel so density
+# can sit beside real features without being interpolated into SQL.
+DENSITY_FEATURE = "__density__"
+DENSITY_LABEL = "density"
+
 ##############################
 # UTILS
 ##############################
@@ -154,6 +159,46 @@ def get_available_coordinate_systems(db_path):
 
 
 
+def _feature_dropdown_options(feature_info, cluster_cols):
+    """Color-by choices. Density is first because it is not a table column."""
+    options = [{"label": DENSITY_LABEL, "value": DENSITY_FEATURE}]
+    options.extend(
+        {"label": feature["column_name"], "value": feature["column_name"]}
+        for feature in feature_info
+    )
+    if cluster_cols:
+        options.append({
+            "label": "── Clustering ──",
+            "value": "__cluster_sep__",
+            "disabled": True,
+        })
+        options.extend({"label": column, "value": column} for column in cluster_cols)
+    return options
+
+
+def _feature_panel_title(feature_name):
+    if feature_name == DENSITY_FEATURE:
+        return DENSITY_LABEL
+    return feature_name
+
+
+def _requested_columns(feature_cols, filter_values=None):
+    """Names requested from the features table.
+
+    Density is a shading mode. Dropping the sentinel here keeps it out of
+    the SELECT when Color By or feature comparison includes it.
+    """
+    cols = set()
+    if feature_cols:
+        if isinstance(feature_cols, str):
+            feature_cols = [feature_cols]
+        cols.update(column for column in feature_cols if column)
+    if filter_values:
+        cols.update(filter_values.keys())
+    cols.discard(DENSITY_FEATURE)
+    return cols
+
+
 def load_coordinates_from_db(db_path,
                              coordinate_systems,
                              feature_cols=None, 
@@ -163,14 +208,7 @@ def load_coordinates_from_db(db_path,
 
     try:
         select = ["c.sequence_id AS header"]
-        cols = set()
-        if feature_cols:   
-            if isinstance(feature_cols, str):
-                feature_cols = [feature_cols]
-            cols.update(feature_cols)
-
-        if filter_values:
-            cols.update(filter_values.keys())
+        cols = _requested_columns(feature_cols, filter_values)
 
         for cs in coordinate_systems:
             select.append(f"ST_X(c.{cs}) AS x_{cs}")
@@ -422,7 +460,9 @@ def create_datashader_image(df, x_col, y_col,
 
     cvs = ds.Canvas(plot_width=plot_width, plot_height=plot_height)
 
-    if color_col is not None and color_col in df:
+    # The density sentinel is a plot mode, not a column, even if a frame
+    # happens to contain a series with that name.
+    if color_col not in (None, DENSITY_FEATURE) and color_col in df:
         is_cluster = bool(cluster_cols and color_col in cluster_cols)
 
         if is_cluster:
@@ -464,9 +504,10 @@ def create_datashader_image(df, x_col, y_col,
             )
     
     else:
+        # No feature, or the density option: local point counts. fire + eq_hist
+        # matches the static embedding density plots and the legend under the plot.
         agg = cvs.points(df_ds, x='x', y='y', agg=ds.count())
-        cmap = plt.get_cmap("plasma")
-        img = tf.shade(agg, cmap=[matplotlib.colors.rgb2hex(cmap(i)) for i in range(cmap.N)], how='eq_hist')
+        img = tf.shade(agg, cmap=fire, how='eq_hist')
     
     img = tf.spread(img, px=max(int(px_spread), 1))
     return img.to_pil()
@@ -480,10 +521,14 @@ def create_panel_legend(df, feature_name, continuous_palette, categorical_palett
     Must always return exactly 2 values.
     """
 
-    if not feature_name or feature_name not in df.columns:
+    if (
+        not feature_name
+        or feature_name == DENSITY_FEATURE
+        or feature_name not in df.columns
+    ):
         return (
             html.Div(
-                "Density map",
+                DENSITY_LABEL,
                 style={"color": "white", "fontSize": "0.75rem", "textAlign": "center"}
             ),
             "continuous"
@@ -976,13 +1021,7 @@ def build_dynamic_sidebar(feature_info):
             dbc.Label("Color By", className="small mt-3"),
             dcc.Dropdown(
                 id="color-feature-dropdown",
-                options=(
-                    [{"label": f['column_name'], "value": f['column_name']}
-                     for f in feature_info]
-                    + ([{"label": "── Clustering ──", "value": "__cluster_sep__", "disabled": True}]
-                       + [{"label": c, "value": c} for c in CLUSTER_COLS]
-                       if CLUSTER_COLS else [])
-                ),
+                options=_feature_dropdown_options(feature_info, CLUSTER_COLS),
                 placeholder="Select feature",
                 searchable=False,
             ),
@@ -993,13 +1032,7 @@ def build_dynamic_sidebar(feature_info):
             dbc.Label("Features to Compare", className="small mt-3"),
             dcc.Dropdown(
                 id="feature-comparison-dropdown",
-                options=(
-                    [{"label": f['column_name'], "value": f['column_name']}
-                     for f in feature_info]
-                    + ([{"label": "── Clustering ──", "value": "__cluster_sep__", "disabled": True}]
-                       + [{"label": c, "value": c} for c in CLUSTER_COLS]
-                       if CLUSTER_COLS else [])
-                ),
+                options=_feature_dropdown_options(feature_info, CLUSTER_COLS),
                 multi=True,
                 placeholder="Select features",
                 searchable=False,
@@ -1574,7 +1607,7 @@ def update_multiple_coord_plots(
                 "panel_id": f"{cs}__{feat}",
                 "coordinate_system": cs,
                 "feature": feat,
-                "title": feat,
+                "title": _feature_panel_title(feat),
             })
 
         feature_cols_to_load = list(selected_features)
@@ -1805,7 +1838,11 @@ def update_multiple_coord_plots(
     # Shared legend only for DR comparison mode
     legend_component = ""
     if plot_mode == "dr-comparison":
-        if selected_feature and (selected_feature in df.columns):
+        if (
+            selected_feature
+            and selected_feature != DENSITY_FEATURE
+            and selected_feature in df.columns
+        ):
             if pd.api.types.is_numeric_dtype(df[selected_feature]):
                 if df[selected_feature].notna().any():
                     vmin = float(df[selected_feature].min())
