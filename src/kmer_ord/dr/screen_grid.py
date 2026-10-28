@@ -30,10 +30,30 @@ INT_AXES = {"n_neighbors", "perplexity", "n_inliers", "learning_rate"}
 _NICE_MULTIPLIERS = (1, 2, 5)
 
 
-def _parse_specs(entries: list[str] | None) -> dict[str, str]:
-    """['all=5,320', 'umap=10,300'] -> {'all': '5,320', 'umap': '10,300'}"""
-    out = {}
+def _expand_semicolon_entries(entries: list[str] | None) -> list[str]:
+    """Split 'localmap=0.1,1.0;pacmap=0.5,2.0' into one spec per method.
+
+    Empty pieces are dropped, so a trailing semicolon is harmless. The shell
+    still needs quotes around the value: ';' separates commands when bare.
+    """
+    expanded: list[str] = []
     for entry in entries or []:
+        for piece in str(entry).split(";"):
+            piece = piece.strip()
+            if piece:
+                expanded.append(piece)
+    return expanded
+
+
+def _parse_specs(entries: list[str] | None, *, semicolons: bool = False) -> dict[str, str]:
+    """['all=5,320', 'umap=10,300'] -> {'all': '5,320', 'umap': '10,300'}.
+
+    With semicolons=True, one flag value may hold several method= specs.
+    A later piece, or a later repeated flag, replaces an earlier one.
+    """
+    source = _expand_semicolon_entries(entries) if semicolons else (entries or [])
+    out = {}
+    for entry in source:
         key, _, value = entry.partition("=")
         out[key.strip().lower()] = value.strip()
     return out
@@ -91,16 +111,26 @@ def validate_screen_specs(
     values2: list[str] | None = None,
     range1: list[str] | None = None,
     range2: list[str] | None = None,
+    grid: str | None = None,
 ) -> None:
     """Fail on screen specs that would be ignored during grid resolution."""
-    for flag, entries in (
-        ("--screen_values1", values1),
-        ("--screen_values2", values2),
-        ("--screen_range1", range1),
-        ("--screen_range2", range2),
+    for flag, entries, semicolons in (
+        ("--screen_values1", values1, False),
+        ("--screen_values2", values2, False),
+        ("--screen_range1", range1, True),
+        ("--screen_range2", range2, True),
     ):
         for entry in entries or []:
-            _validate_screen_entry(entry, flag)
+            # Ranges may join several method=min,max specs with ';'.
+            # Values stay one spec per flag: a semicolon there is not a separator.
+            pieces = _expand_semicolon_entries([entry]) if semicolons else [entry]
+            if semicolons and str(entry).strip() and not pieces:
+                _validate_screen_entry(str(entry).strip(), flag)
+                continue
+            for piece in pieces:
+                _validate_screen_entry(piece, flag)
+    if grid is not None and str(grid).strip():
+        _parse_grid_specs(grid)
 
 
 def _parse_numbers(csv: str) -> list[float]:
@@ -108,14 +138,103 @@ def _parse_numbers(csv: str) -> list[float]:
             for v in csv.split(",") if v.strip()]
 
 
-def _parse_grid_spec(spec: str | None) -> tuple[int | None, int | None]:
-    if not spec:
-        return None, None
-    spec = spec.strip().lower()
-    if "x" in spec:
-        a, b = spec.split("x", 1)
-        return int(a), int(b)
-    return int(spec), None
+def _parse_grid_size(size: str, shown: str) -> tuple[int, int | None]:
+    """'5' -> (5, None). '5x4' -> (5, 4). Counts must be positive integers."""
+    text = size.strip().lower()
+    form = "'N' or 'NxM'"
+    if "x" in text:
+        left, right = text.split("x", 1)
+        if not left.strip() or not right.strip() or "x" in right:
+            raise ValueError(f"--screen_grid {shown!r} size {size!r} must be {form}")
+        try:
+            n1 = int(left)
+            n2 = int(right)
+        except ValueError as exc:
+            raise ValueError(f"--screen_grid {shown!r} size {size!r} must be {form}") from exc
+        if n1 < 1 or n2 < 1:
+            raise ValueError(
+                f"--screen_grid {shown!r} size {size!r} needs counts greater than zero"
+            )
+        return n1, n2
+    try:
+        n1 = int(text)
+    except ValueError as exc:
+        raise ValueError(f"--screen_grid {shown!r} size {size!r} must be {form}") from exc
+    if n1 < 1:
+        raise ValueError(
+            f"--screen_grid {shown!r} size {size!r} needs a count greater than zero"
+        )
+    return n1, None
+
+
+def _parse_grid_specs(spec: str | None) -> dict[str, tuple[int, int | None]]:
+    """Resolve --screen_grid into per-method (axis1, axis2) counts.
+
+    '5x4' and 'all=5x4' size every method. 'localmap=5x4;pacmap=3x3' sizes
+    only those methods. A bare size mixed into a named list is rejected;
+    use 'all=5x4;localmap=3x3' when some methods override a shared size.
+    Axis2 is None for a 1D size ('5' or 'method=5').
+    """
+    if not isinstance(spec, str):
+        return {}
+    text = spec.strip()
+    if not text:
+        return {}
+
+    pieces = [piece.strip() for piece in text.split(";") if piece.strip()]
+    if not pieces:
+        raise ValueError(
+            f"--screen_grid {text!r} must be 'N', 'NxM', or 'method=NxM;method=NxM'"
+        )
+
+    named = ["=" in piece for piece in pieces]
+    if any(named) and not all(named):
+        raise ValueError(
+            f"--screen_grid {text!r} mixes a bare size with method=size. "
+            "Use 'NxM' alone for every method, or name each one "
+            "('localmap=5x4;pacmap=3x3'). Use 'all=5x4' to set a default "
+            "and override some methods."
+        )
+    if not any(named):
+        if len(pieces) != 1:
+            raise ValueError(
+                f"--screen_grid {text!r} has more than one bare size. "
+                "Use 'NxM' alone for every method, or name each one "
+                "('localmap=5x4;pacmap=3x3')."
+            )
+        # A bare size is the shared default, same as writing all=NxM.
+        return {"all": _parse_grid_size(pieces[0], text)}
+
+    allowed = (*SCREEN_AXES, "all")
+    out: dict[str, tuple[int, int | None]] = {}
+    for piece in pieces:
+        key, _, raw_size = piece.partition("=")
+        method = key.strip().lower()
+        size = raw_size.strip()
+        if not method or not size:
+            raise ValueError(
+                f"--screen_grid {piece!r} must be 'method=N' or 'method=NxM'"
+            )
+        if method not in allowed:
+            names = ", ".join(allowed)
+            raise ValueError(
+                f"--screen_grid method {method!r} is not screenable; "
+                f"use one of {names}."
+            )
+        # Repeated methods: the rightmost entry wins, same as a later flag.
+        out[method] = _parse_grid_size(size, text)
+    return out
+
+
+def _grid_size_for(
+    method: str, sizes: dict[str, tuple[int, int | None]]
+) -> tuple[int | None, int | None]:
+    """Method entry replaces 'all' as a whole, so method=5 does not keep all's axis 2."""
+    if method in sizes:
+        return sizes[method]
+    if "all" in sizes:
+        return sizes["all"]
+    return None, None
 
 
 def _nice_round(value: float) -> float:
@@ -181,28 +300,59 @@ def resolve_method_grid(
     holds axis2 fixed at that method's own scale-preset default in that case.
 
     No overrides at all -> exact original hardcoded 2D grid, unchanged.
+
+    --screen_grid '5x4' (or 'all=5x4') sizes every method.
+    'localmap=5x4;pacmap=3x3' sizes only those methods; every other method
+    keeps DEFAULT_GRIDS unless its own values or ranges say otherwise.
+    A named size replaces 'all' for that method, including a 1D 'method=5'.
+
+    Range flags accept the same ';' joining, and still accept a repeated flag.
+    A named range overrides 'all'.
     """
     validate_screen_specs(
         values1=values1,
         values2=values2,
         range1=range1,
         range2=range2,
+        grid=grid_spec,
     )
     axis1_name, axis2_name = SCREEN_AXES[method]
+    grid_text = grid_spec.strip() if isinstance(grid_spec, str) else ""
+    grid_text = grid_text or None
 
-    if not any([values1, values2, range1, range2, grid_spec]):
+    if not any([values1, values2, range1, range2, grid_text]):
         return DEFAULT_GRIDS[method][axis1_name], DEFAULT_GRIDS[method][axis2_name]
 
     v1, v2 = _parse_specs(values1), _parse_specs(values2)
-    r1, r2 = _parse_specs(range1), _parse_specs(range2)
-    size1, size2 = _parse_grid_spec(grid_spec)
+    r1 = _parse_specs(range1, semicolons=True)
+    r2 = _parse_specs(range2, semicolons=True)
+    grid_sizes = _parse_grid_specs(grid_text)
+    size1, size2 = _grid_size_for(method, grid_sizes)
+    # 'all' or this method's own entry. A spec that only names other methods
+    # must not resize this one.
+    grid_applies = method in grid_sizes or "all" in grid_sizes
+    axis1_size = size1 if grid_applies else None
 
-    axis1_vals = _resolve_axis(method, axis1_name, v1, r1, size1) or DEFAULT_GRIDS[method][axis1_name]
+    default_axis1 = DEFAULT_GRIDS[method][axis1_name]
+    default_axis2 = DEFAULT_GRIDS[method][axis2_name]
+    axis1_vals = _resolve_axis(method, axis1_name, v1, r1, axis1_size) or default_axis1
 
-    axis2_touched = (method in v2 or "all" in v2 or method in r2 or "all" in r2
-                      or size2 is not None)
-    if not axis2_touched:
+    axis2_explicit = method in v2 or "all" in v2 or method in r2 or "all" in r2
+    # Bare 'N' / 'method=N' is a 1D screen unless this axis has its own values or range.
+    if grid_applies and size2 is None and not axis2_explicit:
         return axis1_vals, None
 
-    axis2_vals = _resolve_axis(method, axis2_name, v2, r2, size2) or DEFAULT_GRIDS[method][axis2_name]
-    return axis1_vals, axis2_vals
+    if axis2_explicit or (grid_applies and size2 is not None):
+        axis2_size = size2 if grid_applies else None
+        axis2_vals = _resolve_axis(method, axis2_name, v2, r2, axis2_size) or default_axis2
+        return axis1_vals, axis2_vals
+
+    # Named grids for other methods used to fall through to the 1D return
+    # below, because any grid_spec made size2 look global. Keep the built-in
+    # 2D grid instead. An axis-1-only values/range override is still 1D.
+    if grid_sizes and not grid_applies:
+        axis1_explicit = method in v1 or "all" in v1 or method in r1 or "all" in r1
+        if not axis1_explicit:
+            return default_axis1, default_axis2
+
+    return axis1_vals, None
