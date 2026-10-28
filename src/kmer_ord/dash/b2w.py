@@ -511,7 +511,77 @@ def create_datashader_image(df, x_col, y_col,
     
     img = tf.spread(img, px=max(int(px_spread), 1))
     return img.to_pil()
-    
+
+
+# eq_hist ranks bins inside one panel, so the bar is relative density, not a count.
+DENSITY_LEGEND_CAPTION = (
+    "Color map: point density (Datashader 'fire' colormap, eq_hist). "
+    "Brighter = higher local density."
+)
+
+
+def _fire_css_gradient(stops=8):
+    """Left-to-right CSS gradient sampled from colorcet.fire."""
+    last = len(fire) - 1
+    colors = [fire[round(i * last / (stops - 1))] for i in range(stops)]
+    return "linear-gradient(to right, " + ", ".join(colors) + ")"
+
+
+def _density_legend(compact=True):
+    """Fire scale for density shading.
+
+    compact is one row (labels plus bar) so it fits the 40px feature-comparison
+    slot. The shared DR-comparison legend adds the eq_hist caption.
+    """
+    label_style = {
+        "color": "#ccc",
+        "fontSize": "0.65rem",
+        "lineHeight": "10px",
+        "flex": "0 0 auto",
+    }
+    # fire[0] is black, which disappears on the dark binner background.
+    row = html.Div(
+        [
+            html.Span("low", style=label_style),
+            html.Div(
+                style={
+                    "height": "10px",
+                    "width": "160px",
+                    "background": _fire_css_gradient(),
+                    "border": "1px solid #aaa",
+                    "borderRadius": "3px",
+                    "flex": "0 0 auto",
+                }
+            ),
+            html.Span("high", style=label_style),
+        ],
+        style={
+            "display": "flex",
+            "alignItems": "center",
+            "justifyContent": "center",
+            "gap": "6px",
+            "width": "100%",
+            "maxHeight": "14px",
+        },
+    )
+    if compact:
+        return row
+    return html.Div(
+        [
+            row,
+            html.Div(
+                DENSITY_LEGEND_CAPTION,
+                style={
+                    "color": "white",
+                    "fontSize": "0.75rem",
+                    "marginTop": "4px",
+                },
+            ),
+        ],
+        style={"color": "white", "textAlign": "center"},
+    )
+
+
 # Small per-panel legend for feature comparison mode.
 def create_panel_legend(df, feature_name, continuous_palette, categorical_palette):
     """
@@ -526,13 +596,7 @@ def create_panel_legend(df, feature_name, continuous_palette, categorical_palett
         or feature_name == DENSITY_FEATURE
         or feature_name not in df.columns
     ):
-        return (
-            html.Div(
-                DENSITY_LABEL,
-                style={"color": "white", "fontSize": "0.75rem", "textAlign": "center"}
-            ),
-            "continuous"
-        )
+        return _density_legend(compact=True), "continuous"
 
     # Cluster column → adaptive legend
     if feature_name in CLUSTER_COLS:
@@ -1944,11 +2008,7 @@ def update_multiple_coord_plots(
                         style={"color": "white"}
                     )
         else:
-            legend_component = html.Div(
-                "Color map: point density (Datashader 'fire' colormap, eq_hist). "
-                "Brighter = higher local density.",
-                style={"color": "white"}
-            )
+            legend_component = _density_legend(compact=False)
     else:
         legend_component = html.Div()
 

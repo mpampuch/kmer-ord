@@ -5,9 +5,11 @@ so the SQL that loads coordinates never asks for a column of that name.
 """
 import numpy as np
 import pandas as pd
+from colorcet import fire
 
 from kmer_ord.dash.b2w import (
     DENSITY_FEATURE,
+    _density_legend,
     _feature_dropdown_options,
     _feature_panel_title,
     _requested_columns,
@@ -105,14 +107,56 @@ def test_density_sentinel_is_not_requested_as_a_sql_column():
     assert _requested_columns(DENSITY_FEATURE) == set()
 
 
+def _component_text_and_backgrounds(component):
+    """Flatten a Dash tree into visible strings and CSS background values."""
+    texts = []
+    backgrounds = []
+
+    def walk(node):
+        if isinstance(node, str):
+            texts.append(node)
+            return
+        style = getattr(node, "style", None) or {}
+        background = style.get("background")
+        if background:
+            backgrounds.append(background)
+        children = getattr(node, "children", None)
+        if children is None:
+            return
+        if isinstance(children, (list, tuple)):
+            for child in children:
+                walk(child)
+        else:
+            walk(children)
+
+    walk(component)
+    return texts, backgrounds
+
+
 def test_density_panel_legend_and_title_name_density():
     frame = _xy_frame()
     frame["gc_content"] = 0.5
     legend, legend_type = create_panel_legend(
         frame, DENSITY_FEATURE, "viridis", "glasbey",
     )
+    texts, backgrounds = _component_text_and_backgrounds(legend)
 
     assert legend_type == "continuous"
-    assert legend.children == "density"
+    assert any("linear-gradient" in background for background in backgrounds)
+    assert any(color in background for background in backgrounds for color in fire)
+    assert "low" in texts
+    assert "high" in texts
+    # The 40px panel slot only fits the bar. The eq_hist note stays on the shared legend.
+    assert not any("eq_hist" in text for text in texts)
     assert _feature_panel_title(DENSITY_FEATURE) == "density"
     assert _feature_panel_title("gc_content") == "gc_content"
+
+
+def test_density_shared_legend_names_histogram_equalization():
+    legend = _density_legend(compact=False)
+    texts, backgrounds = _component_text_and_backgrounds(legend)
+
+    assert any("linear-gradient" in background for background in backgrounds)
+    assert "low" in texts
+    assert "high" in texts
+    assert any("eq_hist" in text for text in texts)
