@@ -10,6 +10,38 @@ from kmer_ord.utils.logging_utils import console, run_logged_command, section
 # and the model log, are shown.
 _CLASS_COUNT = re.compile(r"[^:]+:\s*\d+")
 
+# Tiara writes "n/a" when the second stage made no call. Pandas' default NA
+# parsing also turns that literal into null on read, so both forms mean the
+# same thing: there is no organelle label to substitute.
+_NO_SECOND_STAGE_CALL = {"n/a", "na"}
+
+
+def add_class_combined(df):
+    """First-stage labels, with organelle replaced by the second-stage call.
+
+    Returns the frame unchanged when either stage column is missing. An
+    existing class_combined column is recomputed from the two stages. A
+    missing, blank, or n/a second stage is not a call, so those organelle
+    rows keep the first-stage label and still show up in one plot.
+    """
+    if "class_fst_stage" not in df.columns or "class_snd_stage" not in df.columns:
+        return df
+
+    second_stage = df["class_snd_stage"].astype("string").str.strip().str.lower()
+    no_call = (
+        second_stage.isna()
+        | second_stage.eq("")
+        | second_stage.isin(_NO_SECOND_STAGE_CALL)
+    )
+    organelle = (
+        df["class_fst_stage"].astype("string").str.strip().str.lower().eq("organelle")
+    )
+    combined = df["class_fst_stage"].mask(organelle & ~no_call, df["class_snd_stage"])
+
+    out = df.copy()
+    out["class_combined"] = combined
+    return out
+
 
 def _tiara_summary_keep():
     """Keep stage sentences, the timing line, and the class-count block.
@@ -81,6 +113,7 @@ def run_tiara(input_file, output_file, threads=1, script_name="tiara", verbose=F
     # IDs consistent with the rest of the pipeline.
     df = pd.read_csv(output_file, sep="\t")
     df["sequence_id"] = df["sequence_id"].astype(str).str.split().str[0]
+    df = add_class_combined(df)
     df.to_csv(output_file, sep="\t", index=False)
 
     if verbose:

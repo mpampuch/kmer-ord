@@ -240,6 +240,10 @@ def test_tiara_summary_shows_statistics_and_rewrites_ids(monkeypatch, tmp_path):
     rewritten = output.read_text(encoding="utf-8")
     assert "read_1\t" in rewritten
     assert "length=" not in rewritten
+    header, row = (line.split("\t") for line in rewritten.splitlines())
+    assert row[0] == "read_1"
+    assert row[header.index("class_fst_stage")] == "bacteria"
+    assert row[header.index("class_combined")] == "bacteria"
 
 
 def test_tiara_verbose_prints_the_log_file(monkeypatch, tmp_path):
