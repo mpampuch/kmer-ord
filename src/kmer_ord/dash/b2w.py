@@ -21,6 +21,8 @@ import argparse
 from math import ceil
 from matplotlib.path import Path
 
+from kmer_ord.vis.embedding_plots import NA_COLOR, NA_LABEL
+
 def run_dash_app(db_path: str, output_dir: str, host="127.0.0.1", port=8050):
     global GLOBAL_DB_PATH, output_dir_default
     GLOBAL_DB_PATH = db_path
@@ -361,6 +363,53 @@ def _cluster_color_key(categories):
     return key, n, mode
 
 
+# Tiara writes "n/a" when the second stage made no call. Pandas' default NA
+# parsing usually turns that into null on read; a literal that survived is
+# the same missing label. "na" is the lowercased form of both "n/a" and "NA".
+_NO_CALL_TOKENS = {"n/a", "na"}
+
+
+def _categorical_with_missing(series):
+    """Real labels, with null, blank, and Tiara n/a tokens replaced by NA.
+
+    Datashader's count_cat drops nulls. rDNA only labels reads that hit, and
+    Tiara's second stage only labels organelles, so those columns are mostly
+    missing. Leaving the nulls out makes the embedding look like it contains
+    only the called reads. The NA label is the one the static embedding plots
+    already paint grey.
+    """
+    text = series.astype("string").str.strip()
+    missing = text.isna() | text.eq("") | text.str.lower().isin(_NO_CALL_TOKENS)
+    return text.mask(missing, NA_LABEL).astype("category")
+
+
+def _categorical_color_key(categories, color_palette):
+    """Palette for the called labels. NA stays grey and does not take a slot.
+
+    A sparse column is almost entirely NA. Counting that label toward the
+    Category10 cutoff would push a 10-label feature onto glasbey and hand NA
+    a qualitative color of its own.
+    """
+    real = [category for category in categories if category != NA_LABEL]
+    if color_palette == "Category10" and len(real) <= 10:
+        colors = bokeh.palettes.Category10[10][:len(real)]
+    else:
+        colors = glasbey[:len(real)]
+    key = dict(zip(real, colors))
+    if NA_LABEL in categories:
+        key[NA_LABEL] = NA_COLOR
+    return key
+
+
+def _categorical_legend_entries(series, color_palette):
+    """(label, hex) pairs in category order, with NA last when it is present."""
+    labeled = _categorical_with_missing(series)
+    real = [category for category in labeled.cat.categories if category != NA_LABEL]
+    categories = [*real, NA_LABEL] if NA_LABEL in labeled.cat.categories else real
+    key = _categorical_color_key(categories, color_palette)
+    return [(category, key[category]) for category in categories]
+
+
 def create_datashader_image(df, x_col, y_col,
                             color_col=None, color_palette="viridis",
                             px_spread=3,
@@ -397,25 +446,22 @@ def create_datashader_image(df, x_col, y_col,
             img = tf.shade(agg, cmap=cmap_list, how='linear')
         
         else:
-            #  Datashader count_cat() requires a categorical column
-            cat = df[color_col].astype("category")
-            df_ds['cat_value'] = pd.Categorical(cat)
-            categories = list(cat.cat.categories)
-        
-            # use categorical palette selector only
-            if color_palette == "Category10":
-                if len(categories) <= 10:
-                    palette = bokeh.palettes.Category10[10][:len(categories)]
-                else:
-                    palette = glasbey[:len(categories)]
-            elif color_palette == "glasbey":
-                palette = glasbey[:len(categories)]
-            else:
-                palette = glasbey[:len(categories)]
-        
-            key = dict(zip(categories, palette))
+            # count_cat drops nulls. Assign the labels by position: df_ds has
+            # a fresh RangeIndex, and aligning the labeled Series on df's
+            # index would turn every label into null again.
+            labeled = _categorical_with_missing(df[color_col])
+            df_ds['cat_value'] = pd.Categorical(
+                labeled.to_numpy(),
+                categories=list(labeled.cat.categories),
+            )
+            key = _categorical_color_key(list(labeled.cat.categories), color_palette)
             agg = cvs.points(df_ds, x='x', y='y', agg=ds.count_cat('cat_value'))
-            img = tf.shade(agg, color_key=key, how='eq_hist')
+            # min_alpha=255 matches the static embedding plots. NA is usually
+            # most of the points, and the default alpha scaling draws that
+            # majority nearly transparent on a dark canvas.
+            img = tf.shade(
+                agg, color_key=key, how='eq_hist', alpha=255, min_alpha=255,
+            )
     
     else:
         agg = cvs.points(df_ds, x='x', y='y', agg=ds.count())
@@ -575,10 +621,11 @@ def create_panel_legend(df, feature_name, continuous_palette, categorical_palett
             "continuous"
         )
 
-    # Categorical feature -> compact HTML legend
-    cats = df[feature_name].astype("category").cat.categories.tolist()
+    # Categorical feature -> compact HTML legend. Same NA mapping as the image,
+    # so a missing rDNA or second-stage call is a grey swatch rather than absent.
+    entries = _categorical_legend_entries(df[feature_name], categorical_palette)
 
-    if not cats:
+    if not entries:
         return (
             html.Div(
                 f"{feature_name}: no categories",
@@ -587,13 +634,8 @@ def create_panel_legend(df, feature_name, continuous_palette, categorical_palett
             "categorical"
         )
 
-    if categorical_palette == "Category10" and len(cats) <= 10:
-        palette = bokeh.palettes.Category10[10][:len(cats)]
-    else:
-        palette = glasbey[:len(cats)]
-
     items = []
-    for cat, color in zip(cats, palette):
+    for cat, color in entries:
         items.append(
             html.Div(
                 [
@@ -1826,15 +1868,10 @@ def update_multiple_coord_plots(
                             style={"color": "white"}
                         )
             else:
-                cats = df[selected_feature].astype("category").cat.categories.tolist()
-                if cats:
-                    if categorical_palette == "Category10" and len(cats) <= 10:
-                        palette = bokeh.palettes.Category10[10][:len(cats)]
-                    else:
-                        palette = glasbey[:len(cats)]
-
+                entries = _categorical_legend_entries(df[selected_feature], categorical_palette)
+                if entries:
                     items = []
-                    for cat, color in zip(cats, palette):
+                    for cat, color in entries:
                         items.append(
                             html.Div(
                                 [
