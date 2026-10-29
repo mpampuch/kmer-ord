@@ -106,6 +106,38 @@ def _validate_screen_entry(entry: str, flag: str) -> None:
             )
 
 
+def named_screen_methods(
+    values1: list[str] | None = None,
+    values2: list[str] | None = None,
+    range1: list[str] | None = None,
+    range2: list[str] | None = None,
+    grid: str | None = None,
+) -> list[str]:
+    """Methods explicitly named in screen specs, in first-seen order.
+
+    'all' and a bare grid size apply to whatever --dr runs, so they are omitted.
+    """
+    names: list[str] = []
+    seen: set[str] = set()
+
+    def add(key: str) -> None:
+        method = key.strip().lower()
+        if not method or method == "all" or method in seen:
+            return
+        seen.add(method)
+        names.append(method)
+
+    for entries in (values1, values2, range1, range2):
+        for piece in _expand_semicolon_entries(entries):
+            add(piece.partition("=")[0])
+    if grid is not None and str(grid).strip():
+        for piece in _expand_semicolon_entries([grid]):
+            if "=" not in piece:
+                continue
+            add(piece.partition("=")[0])
+    return names
+
+
 def validate_screen_specs(
     values1: list[str] | None = None,
     values2: list[str] | None = None,
@@ -114,17 +146,16 @@ def validate_screen_specs(
     grid: str | None = None,
 ) -> None:
     """Fail on screen specs that would be ignored during grid resolution."""
-    for flag, entries, semicolons in (
-        ("--screen_values1", values1, False),
-        ("--screen_values2", values2, False),
-        ("--screen_range1", range1, True),
-        ("--screen_range2", range2, True),
+    for flag, entries in (
+        ("--screen_values1", values1),
+        ("--screen_values2", values2),
+        ("--screen_range1", range1),
+        ("--screen_range2", range2),
     ):
         for entry in entries or []:
-            # Ranges may join several method=min,max specs with ';'.
-            # Values stay one spec per flag: a semicolon there is not a separator.
-            pieces = _expand_semicolon_entries([entry]) if semicolons else [entry]
-            if semicolons and str(entry).strip() and not pieces:
+            # One flag value may hold several method= specs joined by ';'.
+            pieces = _expand_semicolon_entries([entry])
+            if str(entry).strip() and not pieces:
                 _validate_screen_entry(str(entry).strip(), flag)
                 continue
             for piece in pieces:
@@ -252,6 +283,73 @@ def _nice_round(value: float) -> float:
     return float(nearest * (10 ** exponent))
 
 
+def _distinct_readable(value: float, used: set[float]) -> float:
+    """A short decimal that is not already in used.
+
+    1-2-5 snapping can map two interior points onto one landmark. The grid
+    size is a count of combinations, so the spare point keeps its own value.
+    """
+    for digits in range(3, 15):
+        candidate = float(f"{float(value):.{digits}g}")
+        if candidate not in used:
+            return candidate
+    return float(value)
+
+
+def _nearest_free_int(seed: int, used: set[int]) -> int:
+    delta = 0
+    while delta < 100_000:
+        candidates = (seed,) if delta == 0 else (seed - delta, seed + delta)
+        for candidate in candidates:
+            if candidate >= 1 and candidate not in used:
+                return candidate
+        delta += 1
+    raise ValueError(f"cannot place {len(used) + 1} distinct integer screen values")
+
+
+def _claim_screen_value(preferred, source: float, used: set) -> float:
+    """Prefer the nice number. If it is already taken, keep a distinct neighbour."""
+    if isinstance(preferred, (int, np.integer)) and not isinstance(preferred, bool):
+        number = int(preferred)
+        if number not in used:
+            used.add(number)
+            return number
+        number = _nearest_free_int(int(round(source)), used)
+        used.add(number)
+        return number
+
+    number = float(preferred)
+    if number not in used:
+        used.add(number)
+        return number
+    number = _distinct_readable(source, used)
+    used.add(number)
+    return number
+
+
+def _values_with_requested_count(raw: list[float], snapped: list) -> list[float]:
+    """Return len(raw) screen values. Ends claim their snap before interior points.
+
+    A set of snapped values used to drop collisions, so --screen_grid 5x5 could
+    run 5×4 combinations. UMAP min_dist on [0, 1] sends both 0.75 and 1.0 to 1,
+    and PaCMAP FP_ratio on [0.1, 1] has only four 1-2-5 landmarks.
+    """
+    if len(set(snapped)) == len(raw):
+        return sorted(set(snapped))
+
+    used: set = set()
+    chosen: list[float | None] = [None] * len(raw)
+    order = []
+    if raw:
+        order.append(0)
+    if len(raw) > 1:
+        order.append(len(raw) - 1)
+    order.extend(range(1, len(raw) - 1))
+    for index in order:
+        chosen[index] = _claim_screen_value(snapped[index], float(raw[index]), used)
+    return sorted(chosen)
+
+
 def _auto_grid(lo: float, hi: float, n: int, axis_name: str) -> list[float]:
     if n <= 1:
         raw = [(lo + hi) / 2]
@@ -260,10 +358,10 @@ def _auto_grid(lo: float, hi: float, n: int, axis_name: str) -> list[float]:
     else:
         raw = list(np.geomspace(lo, hi, n))
 
-    snapped = sorted({_nice_round(v) for v in raw})
+    snapped = [_nice_round(v) for v in raw]
     if axis_name in INT_AXES:
-        snapped = sorted({int(round(v)) for v in snapped})
-    return snapped
+        snapped = [int(round(v)) for v in snapped]
+    return _values_with_requested_count(raw, snapped)
 
 
 def _resolve_axis(method: str, axis_name: str, values_specs: dict[str, str],
@@ -306,8 +404,8 @@ def resolve_method_grid(
     keeps DEFAULT_GRIDS unless its own values or ranges say otherwise.
     A named size replaces 'all' for that method, including a 1D 'method=5'.
 
-    Range flags accept the same ';' joining, and still accept a repeated flag.
-    A named range overrides 'all'.
+    Value and range flags accept the same ';' joining, and still accept a
+    repeated flag. A named spec overrides 'all'.
     """
     validate_screen_specs(
         values1=values1,
@@ -323,7 +421,8 @@ def resolve_method_grid(
     if not any([values1, values2, range1, range2, grid_text]):
         return DEFAULT_GRIDS[method][axis1_name], DEFAULT_GRIDS[method][axis2_name]
 
-    v1, v2 = _parse_specs(values1), _parse_specs(values2)
+    v1 = _parse_specs(values1, semicolons=True)
+    v2 = _parse_specs(values2, semicolons=True)
     r1 = _parse_specs(range1, semicolons=True)
     r2 = _parse_specs(range2, semicolons=True)
     grid_sizes = _parse_grid_specs(grid_text)
