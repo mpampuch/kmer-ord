@@ -74,6 +74,16 @@ _DR_ON_FAILURE_HELP = (
     "the run still fails if every method fails. "
     "'abort' stops the pipeline immediately and exits non-zero."
 )
+_SCREEN_VALUES1_HELP = (
+    "Explicit axis-1 values per method: 'method=v1,v2,...' or 'all=v1,v2,...'. "
+    "Repeat the flag, or join several with ';' "
+    "('localmap=10,25,50;pacmap=10,50,100'). A named list overrides 'all'."
+)
+_SCREEN_VALUES2_HELP = (
+    "Explicit axis-2 values per method: 'method=v1,v2,...' or 'all=v1,v2,...'. "
+    "Repeat the flag, or join several with ';' "
+    "('localmap=0.1,0.5,1.0;pacmap=0.5,1.0,2.0'). A named list overrides 'all'."
+)
 _SCREEN_RANGE1_HELP = (
     "Axis-1 range for auto-generated grids: 'method=min,max' or 'all=min,max'. "
     "Repeat the flag, or join several with ';' "
@@ -113,11 +123,34 @@ def _validate_pca_pre_flags(pca_pre: bool, keep_pcs, keep_variance) -> None:
         )
 
 
-def _validate_screen_flags(values1, values2, range1, range2, grid=None) -> None:
+def _screen_flag_is_set(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return bool(value.strip())
+    return any(str(item).strip() for item in value)
+
+
+def _validate_screen_flags(
+    values1,
+    values2,
+    range1,
+    range2,
+    grid=None,
+    *,
+    screen_params: bool = False,
+    dr_methods: str = "",
+    method_flag: str = "--dr",
+) -> None:
     """Fail fast at the CLI. A spec without method= is accepted by Typer
     and then ignored when the grid is built, so the screen runs on the
-    default range. Grid strings are checked here for the same reason."""
-    from kmer_ord.dr.screen_grid import validate_screen_specs
+    default range. Grid strings are checked here for the same reason.
+
+    Screen settings do nothing unless --screen_params is set. A setting that
+    names a method outside the methods actually run is reported, not dropped
+    silently.
+    """
+    from kmer_ord.dr.screen_grid import named_screen_methods, validate_screen_specs
 
     try:
         validate_screen_specs(
@@ -129,6 +162,46 @@ def _validate_screen_flags(values1, values2, range1, range2, grid=None) -> None:
         )
     except ValueError as exc:
         raise typer.BadParameter(str(exc)) from exc
+
+    given = [
+        flag
+        for flag, value in (
+            ("--screen_values1", values1),
+            ("--screen_values2", values2),
+            ("--screen_range1", range1),
+            ("--screen_range2", range2),
+            ("--screen_grid", grid),
+        )
+        if _screen_flag_is_set(value)
+    ]
+    if not given:
+        return
+    if not screen_params:
+        raise typer.BadParameter(f"{', '.join(given)} require --screen_params")
+
+    requested = [part.strip().lower() for part in dr_methods.split(",") if part.strip()]
+    # --dr all runs every method, including every one a screen spec can name.
+    if "all" in requested:
+        return
+    running = set(requested)
+    unused = [
+        method
+        for method in named_screen_methods(
+            values1=values1,
+            values2=values2,
+            range1=range1,
+            range2=range2,
+            grid=grid,
+        )
+        if method not in running
+    ]
+    if unused:
+        shown = ", ".join(unused)
+        running_shown = ", ".join(requested)
+        warn(
+            f"Screen settings for {shown} will not be used; "
+            f"{method_flag} is {running_shown}."
+        )
 
 
 #----- header util
@@ -251,8 +324,8 @@ def run_pipeline(
     pca_pre_method: str = typer.Option("pca", "--pca-pre-method", click_type=_PCA_PRE_METHODS, help=_PCA_PRE_METHOD_HELP),
     pca_pre_batch_size: Optional[int] = typer.Option(None, "--pca-pre-batch-size", help=_PCA_PRE_BATCH_SIZE_HELP),
     screen_params: bool = typer.Option(False, "--screen_params", help="Run parameter screening for supported DR methods"),
-    screen_values1: List[str] = typer.Option([], "--screen_values1", help="Explicit axis-1 (count-like) values per method: 'method=v1,v2,...' or 'all=v1,v2,...'. Repeatable."),
-    screen_values2: List[str] = typer.Option([], "--screen_values2", help="Explicit axis-2 values per method: 'method=v1,v2,...'. Repeatable."),
+    screen_values1: List[str] = typer.Option([], "--screen_values1", help=_SCREEN_VALUES1_HELP),
+    screen_values2: List[str] = typer.Option([], "--screen_values2", help=_SCREEN_VALUES2_HELP),
     screen_range1: List[str] = typer.Option([], "--screen_range1", help=_SCREEN_RANGE1_HELP),
     screen_range2: List[str] = typer.Option([], "--screen_range2", help=_SCREEN_RANGE2_HELP),
     screen_grid: Optional[str] = typer.Option(None, "--screen_grid", help=_SCREEN_GRID_HELP),
@@ -296,7 +369,11 @@ def run_pipeline(
     | fastq -> fasta -> sequence stats -> kmer-counting -> [tiara] -> [rDNA] -> DR -> database |
     """
     _validate_pca_pre_flags(pca_pre, keep_pcs, keep_variance)
-    _validate_screen_flags(screen_values1, screen_values2, screen_range1, screen_range2, screen_grid)
+    _validate_screen_flags(
+        screen_values1, screen_values2, screen_range1, screen_range2, screen_grid,
+        screen_params=screen_params,
+        dr_methods=dr_methods,
+    )
     start_time = datetime.datetime.now()
     enable_run_log(output_dir / "kmer-ord.log")
     print_header(start_time)
@@ -409,8 +486,8 @@ def discover_pipeline(
     pca_pre_method: str = typer.Option("pca", "--pca-pre-method", click_type=_PCA_PRE_METHODS, help=_PCA_PRE_METHOD_HELP),
     pca_pre_batch_size: Optional[int] = typer.Option(None, "--pca-pre-batch-size", help=_PCA_PRE_BATCH_SIZE_HELP),
     screen_params: bool = typer.Option(False, "--screen_params", help="Run parameter screening for supported DR methods"),
-    screen_values1: List[str] = typer.Option([], "--screen_values1", help="Explicit axis-1 (count-like) values per method: 'method=v1,v2,...' or 'all=v1,v2,...'. Repeatable."),
-    screen_values2: List[str] = typer.Option([], "--screen_values2", help="Explicit axis-2 values per method: 'method=v1,v2,...'. Repeatable."),
+    screen_values1: List[str] = typer.Option([], "--screen_values1", help=_SCREEN_VALUES1_HELP),
+    screen_values2: List[str] = typer.Option([], "--screen_values2", help=_SCREEN_VALUES2_HELP),
     screen_range1: List[str] = typer.Option([], "--screen_range1", help=_SCREEN_RANGE1_HELP),
     screen_range2: List[str] = typer.Option([], "--screen_range2", help=_SCREEN_RANGE2_HELP),
     screen_grid: Optional[str] = typer.Option(None, "--screen_grid", help=_SCREEN_GRID_HELP),
@@ -438,7 +515,11 @@ def discover_pipeline(
     | kmer-profiles -> High-D embedding -> clustering -> database |
     """
     _validate_pca_pre_flags(pca_pre, keep_pcs, keep_variance)
-    _validate_screen_flags(screen_values1, screen_values2, screen_range1, screen_range2, screen_grid)
+    _validate_screen_flags(
+        screen_values1, screen_values2, screen_range1, screen_range2, screen_grid,
+        screen_params=screen_params,
+        dr_methods=dr_method,
+    )
     start_time = datetime.datetime.now()
     enable_run_log(output_dir / "kmer-ord.log")
     print_header(start_time)
@@ -821,8 +902,8 @@ def dr_cmd(
     pca_pre_method: str = typer.Option("pca", "--pca-pre-method", click_type=_PCA_PRE_METHODS, help=_PCA_PRE_METHOD_HELP),
     pca_pre_batch_size: Optional[int] = typer.Option(None, "--pca-pre-batch-size", help=_PCA_PRE_BATCH_SIZE_HELP),
     screen_params: bool = typer.Option(False, "--screen_params", help="Run parameter screening for supported DR methods"),
-    screen_values1: List[str] = typer.Option([], "--screen_values1", help="Explicit axis-1 (count-like) values per method: 'method=v1,v2,...' or 'all=v1,v2,...'. Repeatable."),
-    screen_values2: List[str] = typer.Option([], "--screen_values2", help="Explicit axis-2 values per method: 'method=v1,v2,...'. Repeatable."),
+    screen_values1: List[str] = typer.Option([], "--screen_values1", help=_SCREEN_VALUES1_HELP),
+    screen_values2: List[str] = typer.Option([], "--screen_values2", help=_SCREEN_VALUES2_HELP),
     screen_range1: List[str] = typer.Option([], "--screen_range1", help=_SCREEN_RANGE1_HELP),
     screen_range2: List[str] = typer.Option([], "--screen_range2", help=_SCREEN_RANGE2_HELP),
     screen_grid: Optional[str] = typer.Option(None, "--screen_grid", help=_SCREEN_GRID_HELP),
@@ -839,7 +920,12 @@ def dr_cmd(
     Run dimensionality reduction on an existing k-mer matrix.
     """
     _validate_pca_pre_flags(pca_pre, keep_pcs, keep_variance)
-    _validate_screen_flags(screen_values1, screen_values2, screen_range1, screen_range2, screen_grid)
+    _validate_screen_flags(
+        screen_values1, screen_values2, screen_range1, screen_range2, screen_grid,
+        screen_params=screen_params,
+        dr_methods=methods,
+        method_flag="--methods",
+    )
     enable_run_log(output_dir / "kmer-ord.log")
     set_global_threads(threads)
     info(f"Using {threads} threads")
