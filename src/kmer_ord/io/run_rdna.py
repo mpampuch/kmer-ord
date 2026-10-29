@@ -17,16 +17,61 @@ def _rdna_summary_line(line: str) -> bool:
     lowered = line.lower()
     return any(token in lowered for token in _RDNA_ALERT)
 
-RDNA_COLUMNS = {
-    "domain_clean": "rdna_domain",
-    "supergroup": "rdna_supergroup",
-    "division": "rdna_division",
-    "subdivision": "rdna_subdivision",
-    "class": "rdna_class",
-    "order": "rdna_order",
-    "family": "rdna_family",
-    "genus": "rdna_genus",
-}
+# One chosen row comes from either SILVA or PR2. Class through genus already
+# share names. PR2 division is the phylum equivalent, so it fills rdna_phylum.
+# Supergroup and subdivision exist only in PR2.
+FEATURE_COLUMNS = [
+    "sequence_id",
+    "rdna_domain",
+    "rdna_supergroup",
+    "rdna_phylum",
+    "rdna_subdivision",
+    "rdna_class",
+    "rdna_order",
+    "rdna_family",
+    "rdna_genus",
+    "rdna_taxonomy_source",
+]
+
+
+def _series_or_na(df: pd.DataFrame, column: str) -> pd.Series:
+    """A source rank, or all-missing when that database did not emit the column."""
+    if column in df.columns:
+        return df[column]
+    return pd.Series(pd.NA, index=df.index, dtype="object")
+
+
+def _blank(series: pd.Series) -> pd.Series:
+    text = series.astype("string")
+    return text.isna() | text.str.strip().eq("")
+
+
+def unify_taxonomy(df: pd.DataFrame) -> pd.DataFrame:
+    """Map SILVA and PR2 rows onto one rank list.
+
+    Use SILVA phylum. Use PR2 division when that database was chosen, or when
+    phylum is empty (older PR2-only tables have division and no taxonomy_source).
+    """
+    phylum = _series_or_na(df, "phylum")
+    division = _series_or_na(df, "division")
+    source = _series_or_na(df, "taxonomy_source")
+    use_division = source.astype("string").str.strip().eq("pr2").fillna(False) | _blank(phylum)
+    rdna_phylum = division.where(use_division, phylum)
+
+    unified = pd.DataFrame({
+        "sequence_id": df["sequence_id"],
+        "rdna_domain": _series_or_na(df, "domain_clean"),
+        "rdna_supergroup": _series_or_na(df, "supergroup"),
+        "rdna_phylum": rdna_phylum,
+        "rdna_subdivision": _series_or_na(df, "subdivision"),
+        "rdna_class": _series_or_na(df, "class"),
+        "rdna_order": _series_or_na(df, "order"),
+        "rdna_family": _series_or_na(df, "family"),
+        "rdna_genus": _series_or_na(df, "genus"),
+        "rdna_taxonomy_source": source,
+    })
+    return unified.loc[:, FEATURE_COLUMNS]
+
 
 def run_rdna_miner(
     input_file,
@@ -122,8 +167,7 @@ def run_rdna_miner(
     df = df.sort_values("genus_confidence", ascending=False).drop_duplicates(
         subset="sequence_id", keep="first")
 
-    df = df.rename(columns=RDNA_COLUMNS)
-    df = df[["sequence_id"] + list(RDNA_COLUMNS.values())]
+    df = unify_taxonomy(df)
 
     feature_file = Path(feature_file)
     feature_file.parent.mkdir(parents=True, exist_ok=True)

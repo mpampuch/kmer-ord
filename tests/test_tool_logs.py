@@ -1,6 +1,7 @@
 """rDNA-miner and Tiara output is summarized unless --verbose is set."""
 import subprocess
 
+import pandas as pd
 import pytest
 from typer.testing import CliRunner
 
@@ -74,6 +75,41 @@ def _run_rdna(tmp_path, verbose=False):
         feature_file=tmp_path / "features.tsv",
         verbose=verbose,
     )
+
+
+_FEATURE_COLUMNS = [
+    "sequence_id",
+    "rdna_domain",
+    "rdna_supergroup",
+    "rdna_phylum",
+    "rdna_subdivision",
+    "rdna_class",
+    "rdna_order",
+    "rdna_family",
+    "rdna_genus",
+    "rdna_taxonomy_source",
+]
+
+
+def _write_taxonomy_text(output_dir, text):
+    path = output_dir / "taxonomy" / "reads_taxa_ssu_reads.tsv"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+
+
+def _run_with_taxonomy(monkeypatch, tmp_path, text):
+    _patch_popen(monkeypatch, _rdna_chunks())
+    output_dir = tmp_path / "raw"
+    _write_taxonomy_text(output_dir, text)
+    return run_rdna_miner(
+        input_file=tmp_path / "reads.fasta",
+        output_dir=output_dir,
+        feature_file=tmp_path / "features.tsv",
+    )
+
+
+def _read_features(path):
+    return pd.read_csv(path, sep="\t", dtype=str, keep_default_na=False)
 
 
 def test_progress_redraw_is_not_logged(monkeypatch, tmp_path):
@@ -173,6 +209,77 @@ def test_rdna_failure_does_not_repeat_a_shown_alert(monkeypatch, tmp_path):
     text = capture.get()
     assert text.count("RuntimeError: barrnap missing") == 1
     assert "features. RuntimeError" not in text
+
+
+def test_pr2_division_fills_phylum(monkeypatch, tmp_path):
+    _patch_popen(monkeypatch, _rdna_chunks())
+    result = _run_rdna(tmp_path)
+    features = _read_features(result)
+
+    assert list(features.columns) == _FEATURE_COLUMNS
+    assert "rdna_division" not in features.columns
+    row = features.iloc[0]
+    assert row["sequence_id"] == "read_1"
+    assert row["rdna_domain"] == "Eukaryota"
+    assert row["rdna_supergroup"] == "SAR"
+    assert row["rdna_phylum"] == "Alveolata"
+    assert row["rdna_subdivision"] == "Ciliophora"
+    assert row["rdna_class"] == "Spirotrichea"
+    assert row["rdna_order"] == "Sporadotrichida"
+    assert row["rdna_family"] == "Oxytrichidae"
+    assert row["rdna_genus"] == "Sterkiella"
+    assert row["rdna_taxonomy_source"] == ""
+
+
+def test_silva_only_table_leaves_pr2_ranks_empty(monkeypatch, tmp_path):
+    result = _run_with_taxonomy(
+        monkeypatch,
+        tmp_path,
+        "QNAME\tgenus_confidence\tdomain_clean\tphylum\tclass\torder\t"
+        "family\tgenus\ttaxonomy_source\n"
+        "cyano_1\t0.95\tBacteria\tCyanobacteriota\tCyanobacteriia\t"
+        "Synechococcales\tSynechococcaceae\tSynechococcus\tsilva\n",
+    )
+    features = _read_features(result)
+
+    assert list(features.columns) == _FEATURE_COLUMNS
+    assert "rdna_division" not in features.columns
+    row = features.iloc[0]
+    assert row["sequence_id"] == "cyano_1"
+    assert row["rdna_domain"] == "Bacteria"
+    assert row["rdna_supergroup"] == ""
+    assert row["rdna_phylum"] == "Cyanobacteriota"
+    assert row["rdna_subdivision"] == ""
+    assert row["rdna_class"] == "Cyanobacteriia"
+    assert row["rdna_genus"] == "Synechococcus"
+    assert row["rdna_taxonomy_source"] == "silva"
+
+
+def test_mixed_table_uses_the_chosen_database_phylum(monkeypatch, tmp_path):
+    result = _run_with_taxonomy(
+        monkeypatch,
+        tmp_path,
+        "QNAME\tgenus_confidence\tdomain_clean\tsupergroup\tdivision\t"
+        "subdivision\tphylum\tclass\torder\tfamily\tgenus\ttaxonomy_source\n"
+        "bac_read\t0.8\tBacteria\t\tWrongDivision\t\tCyanobacteriota\t"
+        "Cyanobacteriia\tSynechococcales\tSynechococcaceae\tSynechococcus\tsilva\n"
+        "euk_read\t0.9\tEukaryota\tSAR\tAlveolata\tCiliophora\tWrongPhylum\t"
+        "Spirotrichea\tSporadotrichida\tOxytrichidae\tSterkiella\tpr2\n",
+    )
+    features = _read_features(result).set_index("sequence_id")
+
+    assert list(features.columns) == _FEATURE_COLUMNS[1:]
+    bacteria = features.loc["bac_read"]
+    assert bacteria["rdna_phylum"] == "Cyanobacteriota"
+    assert bacteria["rdna_supergroup"] == ""
+    assert bacteria["rdna_subdivision"] == ""
+    assert bacteria["rdna_taxonomy_source"] == "silva"
+
+    eukaryote = features.loc["euk_read"]
+    assert eukaryote["rdna_phylum"] == "Alveolata"
+    assert eukaryote["rdna_supergroup"] == "SAR"
+    assert eukaryote["rdna_subdivision"] == "Ciliophora"
+    assert eukaryote["rdna_taxonomy_source"] == "pr2"
 
 
 def _tiara_chunks():
