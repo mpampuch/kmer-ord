@@ -2,6 +2,33 @@ from pathlib import Path
 from typing import Union
 from kmer_ord.utils.logging_utils import section, info, warn
 
+_FASTA_SUFFIXES = (".fasta", ".fa")
+_FASTQ_SUFFIXES = (".fastq", ".fq")
+
+
+def sequence_format(path: Union[str, Path]) -> str:
+    """Return 'fasta' or 'fastq' from the filename, including gzipped forms.
+
+    `.fastq.gz` is fastq. `.fasta.gz` and `.fa.gz` are fasta.
+    """
+    path = Path(path)
+    suffix = path.suffix.lower()
+    inner = Path(path.stem).suffix.lower() if suffix == ".gz" else suffix
+    if inner in _FASTA_SUFFIXES:
+        return "fasta"
+    if inner in _FASTQ_SUFFIXES:
+        return "fastq"
+    raise ValueError(f"Unsupported file type: {path}")
+
+
+def open_sequence_text(path: Union[str, Path]):
+    """Open a plain or gzipped sequence file for text reading."""
+    import gzip
+    path = Path(path)
+    if path.suffix.lower() == ".gz":
+        return gzip.open(path, "rt")
+    return path.open("rt")
+
 
 def fastq_to_fasta(input_path: Path, output_path: Path) -> None:
     from Bio import SeqIO
@@ -55,12 +82,6 @@ def load_fasta_or_convert(
     suffix = input_file.suffix.lower()
     stem = input_file.stem
 
-    # If gzipped, check inner suffix
-    if suffix == ".gz":
-        inner_suffix = Path(stem).suffix.lower()
-    else:
-        inner_suffix = suffix
-
     fasta_path = work_dir / f"{stem}.fasta"
     fasta_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -68,7 +89,8 @@ def load_fasta_or_convert(
         info(f"Skipping FASTA preparation, output already exists: {fasta_path}")
         return fasta_path
 
-    if inner_suffix in (".fasta", ".fa"):
+    kind = sequence_format(input_file)
+    if kind == "fasta":
         if suffix == ".gz":
             import shutil
             with gzip.open(input_file, "rt") as f_in, fasta_path.open("w") as f_out:
@@ -77,12 +99,10 @@ def load_fasta_or_convert(
             import shutil
             shutil.copy(input_file, fasta_path)
 
-    elif inner_suffix in (".fastq", ".fq"):
+    else:
         if use_seqkit:
             fastq_to_fasta_seqkit(input_file, fasta_path, threads=threads)
         else:
             fastq_to_fasta(input_file, fasta_path)
-    else:
-        raise ValueError(f"Unsupported file type: {input_file}")
 
     return fasta_path

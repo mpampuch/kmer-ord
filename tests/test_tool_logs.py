@@ -381,3 +381,5 @@ def test_help_lists_verbose():
         result = _runner.invoke(app, [command, "--help"])
         assert result.exit_code == 0, result.output
         assert "--verbose" in result.output
+        if command in ("run-tiara", "run-rdna"):
+            assert "--threads" in result.output

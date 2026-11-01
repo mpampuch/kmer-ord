@@ -99,6 +99,27 @@ _SCREEN_GRID_HELP = (
     "'method=NxM;method=NxM' sets only those methods; others keep their default grid. "
     "'all=5x4;localmap=3x3' overrides that default per method."
 )
+# A bool Typer option would also create --no-preserve-fastq. This choice
+# accepts only the words true and false.
+_PRESERVE_FASTQ = click.Choice(["true", "false"], case_sensitive=False)
+_PRESERVE_FASTQ_HELP = (
+    "Store FASTQ quality scores in the SQLite database so bins can be exported as FASTQ. "
+    "'true' (default) keeps the scores. 'false' leaves them empty and the database smaller. "
+    "FASTA inputs have no quality scores either way."
+)
+
+
+def _preserve_fastq_option():
+    return typer.Option(
+        "true",
+        "--preserve-fastq",
+        click_type=_PRESERVE_FASTQ,
+        help=_PRESERVE_FASTQ_HELP,
+    )
+
+
+def _preserve_fastq_enabled(value: str) -> bool:
+    return str(value).lower() == "true"
 
 
 def _existing_rdna_dir(flag: str, help_text: str):
@@ -308,6 +329,7 @@ def run_pipeline(
     input: Path = typer.Option(..., "-i","--input", help="Input fasta/fastq file (can be gzipped)"),
     output_dir: Path = typer.Option(..., "-o","--output", help="Output directory"),
     force: bool = typer.Option(False, "-f","--force", help="Force recomputation even if outputs exist"),
+    preserve_fastq: str = _preserve_fastq_option(),
     kmer_length: int = typer.Option(6,"-k", "--kmer", help="K-mer length"),
     threads: int = typer.Option(4, "-t","--threads", help="Number of threads"),
 
@@ -460,7 +482,7 @@ def run_pipeline(
             on_failure=dr_on_failure,
             verbose=verbose,),
         FeatureMerge(),
-        SpatialiteDatabase()]
+        SpatialiteDatabase(preserve_fastq=_preserve_fastq_enabled(preserve_fastq))]
 
     runner = Runner(operations)
     runner.run(context)
@@ -975,7 +997,9 @@ def cluster_pipeline(
     input: Path = typer.Option(..., "-i", "--input", help="Input directory containing artifacts"),
     output_dir: Path = typer.Option(..., "-o", "--output"),
     method: str = typer.Option("hdbscan", "--method"),
-    force: bool = typer.Option(False, "-f", "--force")):
+    force: bool = typer.Option(False, "-f", "--force"),
+    preserve_fastq: str = _preserve_fastq_option(),
+):
     """
     Cluster sequences using existing embedding.
     """
@@ -986,7 +1010,7 @@ def cluster_pipeline(
     context = Context(input, output_dir, force=force)
 
     operations = [Clustering(method=method),
-                  SpatialiteDatabase()]
+                  SpatialiteDatabase(preserve_fastq=_preserve_fastq_enabled(preserve_fastq))]
 
     runner = Runner(operations)
     runner.run(context)
@@ -998,7 +1022,7 @@ def cluster_pipeline(
 def run_tiara_cmd(
     input: Path = typer.Option(..., "-i","--input", help="Input fasta file"),
     output_dir: Path = typer.Option(..., "-o","--output", help="Output directory"),
-    threads: int = typer.Option(1, "-t", help="Number of threads"),
+    threads: int = typer.Option(1, "-t", "--threads", help="Number of threads"),
     force: bool = typer.Option(False, "-f", "--force", help="Recompute even if output exists"),
     verbose: bool = typer.Option(
         False, "-v", "--verbose",
@@ -1022,7 +1046,7 @@ def run_tiara_cmd(
 def run_rdna_cmd(
     input: Path = typer.Option(..., "-i","--input", help="Input fasta file"),
     output_dir: Path = typer.Option(..., "-o","--output", help="Output directory"),
-    threads: int = typer.Option(1, "-t", help="Number of threads"),
+    threads: int = typer.Option(1, "-t", "--threads", help="Number of threads"),
     platform: str = typer.Option("auto", "-p", "--platform", help="Sequencing platform (auto, ont, pacbio)"),
     force: bool = typer.Option(False, "-f", "--force", help="Recompute even if output exists"),
     rdna_db_dir: Optional[Path] = _existing_rdna_dir(
@@ -1074,7 +1098,9 @@ def run_rdna_cmd(
 def build_database(
     input: Path = typer.Option(..., "-i", "--input", help="Input directory containing artifacts"),
     output_dir: Path = typer.Option(..., "-o","--output", help="Output directory for database"),
-    force: bool = typer.Option(False, "-f", "--force", help="Recompute even if output exists"),):
+    force: bool = typer.Option(False, "-f", "--force", help="Recompute even if output exists"),
+    preserve_fastq: str = _preserve_fastq_option(),
+):
     """
     Build Spatialite database from available artifacts.
     """
@@ -1083,7 +1109,7 @@ def build_database(
 
     context = Context(input, output_dir, force=force)
 
-    operation = SpatialiteDatabase()
+    operation = SpatialiteDatabase(preserve_fastq=_preserve_fastq_enabled(preserve_fastq))
     operation.run(context)
 
     info(f"Database created at: {context.get('database')}")

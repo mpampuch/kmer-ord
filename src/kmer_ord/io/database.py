@@ -42,9 +42,29 @@ def create_fasta_table(conn):
     conn.commit()
 
 
+def sequence_source_for_database(input_file: Path, canonical_fasta: Path, preserve_fastq: bool) -> Path:
+    """Choose the file stored in the fasta table.
+
+    A FASTQ input is stored directly when preserve_fastq is true, so quality
+    strings survive. Otherwise the canonical FASTA is stored and qualities
+    stay empty. FASTA inputs have no quality strings either way.
+    """
+    from kmer_ord.io.sequence import sequence_format
+
+    input_file = Path(input_file)
+    canonical_fasta = Path(canonical_fasta)
+    if preserve_fastq and sequence_format(input_file) == "fastq":
+        return input_file
+    return canonical_fasta
+
+
 def populate_fasta_table(conn, fasta_file: Path, batch_size=50000):
     from Bio.SeqIO.FastaIO import SimpleFastaParser
     from Bio.SeqIO.QualityIO import FastqGeneralIterator
+    from kmer_ord.io.sequence import open_sequence_text, sequence_format
+
+    fasta_file = Path(fasta_file)
+    kind = sequence_format(fasta_file)
     cursor = conn.cursor()
 
     insert_sql = """
@@ -55,27 +75,33 @@ def populate_fasta_table(conn, fasta_file: Path, batch_size=50000):
     conn.execute("BEGIN TRANSACTION;")
     batch = []
 
-    is_fastq = fasta_file.suffix in [".fastq", ".fq"]
+    def flush():
+        if batch:
+            cursor.executemany(insert_sql, batch)
+            batch.clear()
 
-    with open(fasta_file) as handle:
-        if is_fastq:
+    with open_sequence_text(fasta_file) as handle:
+        if kind == "fastq":
             for title, seq, qual in FastqGeneralIterator(handle):
                 short_id = title.split()[0]
+                # A FASTQ record is invalid when the quality line is a different
+                # length from the sequence, so refuse to store it.
+                if len(qual) != len(seq):
+                    raise ValueError(
+                        f"Quality length {len(qual)} does not match sequence "
+                        f"length {len(seq)} for read '{short_id}'."
+                    )
                 batch.append((short_id, title, seq, qual))
                 if len(batch) >= batch_size:
-                    cursor.executemany(insert_sql, batch)
-                    batch.clear()
+                    flush()
         else:
             for title, seq in SimpleFastaParser(handle):
                 short_id = title.split()[0]
                 batch.append((short_id, title, seq, None))
                 if len(batch) >= batch_size:
-                    cursor.executemany(insert_sql, batch)
-                    batch.clear()
+                    flush()
 
-    if batch:
-        cursor.executemany(insert_sql, batch)
-
+    flush()
     conn.commit()
 
 

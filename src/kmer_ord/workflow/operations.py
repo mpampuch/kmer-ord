@@ -592,14 +592,16 @@ class SpatialiteDatabase(Operation):
     requires = ["fasta", "merged_features", "dr_embeddings"]
     produces = ["database"]
 
-    def __init__(self, db_name="kmerord.sqlite"):
+    def __init__(self, db_name="kmerord.sqlite", preserve_fastq: bool = True):
         self.db_name = db_name
+        self.preserve_fastq = preserve_fastq
 
     def run(self, context):
         import pandas as pd
         from kmer_ord.io.database import (initialize_spatialite_db,
                                   create_fasta_table,
                                   populate_fasta_table,
+                                  sequence_source_for_database,
                                   create_features_table,
                                   populate_features_table,
                                   create_coordinates_table,
@@ -618,7 +620,20 @@ class SpatialiteDatabase(Operation):
             conn = initialize_spatialite_db(output_path)
 
             with context.benchmark_timer("db_fasta"):
-                fasta_file = context.get("fasta")
+                from kmer_ord.io.sequence import sequence_format
+                from kmer_ord.utils.logging_utils import info
+
+                fasta_file = sequence_source_for_database(
+                    context.input_file,
+                    context.get("fasta"),
+                    self.preserve_fastq,
+                )
+                if sequence_format(context.input_file) == "fastq" and self.preserve_fastq:
+                    info("Storing FASTQ quality scores in the database (--preserve-fastq true).")
+                elif sequence_format(context.input_file) == "fastq":
+                    info("Leaving FASTQ quality scores out of the database (--preserve-fastq false).")
+                else:
+                    info("Input is FASTA; quality scores are not stored.")
                 create_fasta_table(conn)
                 populate_fasta_table(conn, fasta_file)
 

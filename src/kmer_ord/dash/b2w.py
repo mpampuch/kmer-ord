@@ -2119,8 +2119,68 @@ def overlay_points(
     return list(headers)
 
 
+def _has_quality_string(value) -> bool:
+    if value is None:
+        return False
+    try:
+        if pd.isna(value):
+            return False
+    except (TypeError, ValueError):
+        pass
+    return str(value).strip() != ""
+
+
+def _bin_record_header(row, has_full_header: bool) -> str:
+    if has_full_header and not pd.isna(row["full_header"]):
+        return str(row["full_header"])
+    return str(row["header"])
+
+
+def write_bin_sequences(records: pd.DataFrame, out_dir: str, bin_name: str) -> str:
+    """Write one bin as FASTQ only when every row has a quality string.
+
+    A file named .fastq that also contains '>' records is not valid FASTQ,
+    so a partial quality column falls back to FASTA for the whole bin.
+    """
+    has_full_header = "full_header" in records.columns
+    write_fastq = (
+        not records.empty
+        and "qualities" in records.columns
+        and bool(records["qualities"].map(_has_quality_string).all())
+    )
+
+    if write_fastq:
+        out_path = os.path.join(out_dir, f"{bin_name}.fastq")
+        with open(out_path, "w") as handle:
+            for _, row in records.iterrows():
+                header = _bin_record_header(row, has_full_header)
+                handle.write(
+                    f"@{header}\n{row['sequence']}\n+\n{row['qualities']}\n"
+                )
+        return out_path
+
+    out_path = os.path.join(out_dir, f"{bin_name}.fasta")
+    with open(out_path, "w") as handle:
+        for _, row in records.iterrows():
+            header = _bin_record_header(row, has_full_header)
+            handle.write(f">{header}\n{row['sequence']}\n")
+    return out_path
+
+
+def bin_export_format_note(paths) -> str:
+    """Name the sequence format actually written for the status line."""
+    suffixes = {os.path.splitext(path)[1] for path in paths}
+    if suffixes == {".fastq"}:
+        return "FASTQ"
+    if suffixes == {".fasta"}:
+        return "FASTA"
+    if not suffixes:
+        return "no sequence files"
+    return "FASTQ and FASTA"
+
+
 ##############################
-# BINS + INSPECT + EXPORT (FASTQ/FASTA, CHUNKED, FULL HEADER)
+# BINS + INSPECT + EXPORT (FASTQ OR FASTA, CHUNKED, FULL HEADER)
 ##############################
 @app.callback(
     [
@@ -2259,6 +2319,7 @@ def handle_bin_operations(
             error_message = "No bins to export."
         else:
             os.makedirs(output_dir_default, exist_ok=True)
+            sequence_paths = []
 
             for bin_entry in bins_data:
                 df_filt = efficient_spatialite_export(
@@ -2312,59 +2373,20 @@ def handle_bin_operations(
                                 continue
 
                             fasta_df = pd.concat(dfs, ignore_index=True)
-
-                            write_fastq = (
-                                has_qualities_col
-                                and 'qualities' in fasta_df.columns
-                                and fasta_df['qualities'].notna().any()
+                            sequence_paths.append(
+                                write_bin_sequences(
+                                    fasta_df,
+                                    output_dir_default,
+                                    bin_entry["bin_name"],
+                                )
                             )
-
-                            def get_output_header(row):
-                                if (
-                                    has_full_header_col
-                                    and 'full_header' in row
-                                    and not pd.isna(row['full_header'])
-                                ):
-                                    return row['full_header']
-                                return row['header']
-
-                            if write_fastq:
-                                out_path = os.path.join(
-                                    output_dir_default,
-                                    f"{bin_entry['bin_name']}.fastq"
-                                )
-                                with open(out_path, 'w') as fh:
-                                    for _, row in fasta_df.iterrows():
-                                        q = row.get('qualities')
-                                        header_out = get_output_header(row)
-                                        if pd.isna(q):
-                                            fh.write(
-                                                f">{header_out}\n{row['sequence']}\n"
-                                            )
-                                        else:
-                                            fh.write(
-                                                f"@{header_out}\n"
-                                                f"{row['sequence']}\n"
-                                                f"+\n"
-                                                f"{q}\n"
-                                            )
-                            else:
-                                out_path = os.path.join(
-                                    output_dir_default,
-                                    f"{bin_entry['bin_name']}.fasta"
-                                )
-                                with open(out_path, 'w') as fh:
-                                    for _, row in fasta_df.iterrows():
-                                        header_out = get_output_header(row)
-                                        fh.write(
-                                            f">{header_out}\n{row['sequence']}\n"
-                                        )
                         finally:
                             conn.close()
 
+            format_note = bin_export_format_note(sequence_paths)
             error_message = (
                 f"Bins exported to {output_dir_default} "
-                f"(FASTQ if qualities present, otherwise FASTA; using full headers when available)."
+                f"({format_note}; using full headers when available)."
             )
 
     return bins_data, _status_bar(error_message), table_content, _build_bin_list(bins_data)
