@@ -13,14 +13,16 @@ import numpy as np
 from dash import dash_table
 import matplotlib.colors
 import matplotlib.pyplot as plt
-import bokeh.palettes
-from colorcet import glasbey
 import io
 from PIL import Image
 import argparse
 from math import ceil
 from matplotlib.path import Path
 
+from kmer_ord.vis.categorical_palettes import (
+    DEFAULT_CATEGORICAL_PALETTE,
+    categorical_hex_colors,
+)
 from kmer_ord.vis.embedding_plots import NA_COLOR, NA_LABEL
 
 def run_dash_app(db_path: str, output_dir: str, host="127.0.0.1", port=8050):
@@ -373,7 +375,7 @@ def _cluster_color_key(categories):
     Build a datashader color_key for integer cluster label columns.
 
     - label -1 (noise/unassigned) → fixed grey
-    - ≤20 non-noise labels → glasbey qualitative palette
+    - ≤20 non-noise labels → glasbey qualitative palette (light green → orange)
     - >20 non-noise labels → Turbo sequential colormap for max perceptual separation
 
     Returns (color_key_dict, n_clusters, mode)
@@ -383,7 +385,7 @@ def _cluster_color_key(categories):
     n = len(regular)
 
     if n <= _CLUSTER_CATEGORICAL_THRESHOLD:
-        colors = glasbey[:n]
+        colors = categorical_hex_colors(n, DEFAULT_CATEGORICAL_PALETTE)
         mode = "categorical"
     else:
         # plt.get_cmap (here and below) instead of cm.get_cmap, which was
@@ -429,10 +431,8 @@ def _categorical_color_key(categories, color_palette):
     a qualitative color of its own.
     """
     real = [category for category in categories if category != NA_LABEL]
-    if color_palette == "Category10" and len(real) <= 10:
-        colors = bokeh.palettes.Category10[10][:len(real)]
-    else:
-        colors = glasbey[:len(real)]
+    # len(real), not len(categories): NA must not consume a Category10 slot.
+    colors = categorical_hex_colors(len(real), color_palette)
     key = dict(zip(real, colors))
     if NA_LABEL in categories:
         key[NA_LABEL] = NA_COLOR
@@ -1121,10 +1121,11 @@ def build_dynamic_sidebar(feature_info):
         dcc.Dropdown(
             id="categorical-palette-dropdown",
             options=[
-                {"label": "Category10", "value": "Category10"},
                 {"label": "glasbey", "value": "glasbey"},
+                {"label": "distinct", "value": "distinct"},
+                {"label": "Category10", "value": "Category10"},
             ],
-            value="glasbey",
+            value=DEFAULT_CATEGORICAL_PALETTE,
             searchable=False,
         ),
 

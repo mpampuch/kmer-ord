@@ -11,10 +11,16 @@ import numpy as np
 import datashader as ds
 import datashader.transfer_functions as tf
 from datashader.utils import export_image
-from colorcet import fire, CET_L17, glasbey
+from colorcet import fire, CET_L17
 from PIL import Image, ImageDraw, ImageFont
 
 from kmer_ord.utils.logging_utils import section, info, warn
+from kmer_ord.vis.categorical_palettes import (
+    DEFAULT_CATEGORICAL_PALETTE,
+    NA_COLOR,
+    NA_LABEL,
+    categorical_hex_colors,
+)
 
 # Internal identifier columns (one unique value per sequence) that must never
 # be treated as plottable features — colouring an embedding by them is
@@ -24,15 +30,13 @@ from kmer_ord.utils.logging_utils import section, info, warn
 IGNORE_FEATURES = {"sequence_id", "header"}
 
 # Missing feature values stay visible (grey) instead of being dropped, so a
-# panel's coordinate range is the full embedding. The label is shared with
-# the parameter-screen colour key so every panel uses the same grey.
-NA_LABEL = "NA"
-NA_COLOR = "#BEBEBE"
+# panel's coordinate range is the full embedding. NA_LABEL and NA_COLOR live
+# in categorical_palettes so the parameter-screen colour key uses the same grey.
 
 # Hard cap on the ds.by() aggregation array size for a single categorical
-# plot. 1 GiB allows ~1,600 categories at 400x400 — already far beyond the
-# 256-colour glasbey palette, so anything skipped here would have been an
-# unreadable plot anyway.
+# plot. 1 GiB allows ~1,600 categories at 400x400 — already far beyond a
+# few-hundred-colour qualitative palette, so anything skipped here would have
+# been an unreadable plot anyway.
 MAX_CATEGORICAL_AGG_BYTES = 2**30
 
 # Same cell size and margins as render_param_screen_density_grid, so a
@@ -286,7 +290,7 @@ def _render_feature_to_image(
     panels, which is especially misleading once panels share one legend in a composite.
 
     color_key : optional category -> hex map. When set, it is used as-is instead of assigning
-    glasbey from the categories present in this frame. Parameter-screen panels pass one key
+    the default glasbey palette from the categories present in this frame. Parameter-screen panels pass one key
     built from the whole feature column; rebuilding it here would give a label a new colour
     in any panel that happens to lack one of the categories.
 
@@ -350,12 +354,13 @@ def _render_feature_to_image(
             if len(real_categories) == 1:
                 color_key = {real_categories[0]: "#FF0000"}
             else:
-                # glasbey is a qualitative palette built for maximally-distinct
-                # adjacent colors; sampling consecutive indices out of a smooth
-                # sequential colormap like `fire` here produced near-identical
-                # colors for low category counts (e.g. fire[0]/fire[1] are both
-                # effectively black), making categories visually indistinguishable.
-                palette = [glasbey[i % len(glasbey)] for i in range(len(real_categories))]
+                # A sequential colormap such as `fire` puts neighbouring
+                # categories on nearly the same colour (fire[0] and fire[1]
+                # are both effectively black). The shared qualitative palette
+                # keeps those labels apart.
+                palette = categorical_hex_colors(
+                    len(real_categories), DEFAULT_CATEGORICAL_PALETTE,
+                )
                 color_key = dict(zip(real_categories, palette))
             if NA_LABEL in categories:
                 color_key[NA_LABEL] = NA_COLOR
@@ -704,7 +709,7 @@ def _shared_categorical_color_key(series: pd.Series) -> dict:
     if len(real) == 1:
         color_key = {real[0]: "#FF0000"}
     else:
-        palette = [glasbey[i % len(glasbey)] for i in range(len(real))]
+        palette = categorical_hex_colors(len(real), DEFAULT_CATEGORICAL_PALETTE)
         color_key = dict(zip(real, palette))
     color_key[NA_LABEL] = NA_COLOR
     return color_key

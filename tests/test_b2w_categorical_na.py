@@ -14,6 +14,7 @@ from kmer_ord.dash.b2w import (
     create_datashader_image,
     create_panel_legend,
 )
+from kmer_ord.vis.categorical_palettes import GLASBEY_LIGHT_GREEN
 from kmer_ord.vis.embedding_plots import NA_COLOR, NA_LABEL
 
 
@@ -29,6 +30,28 @@ def test_missing_tokens_become_na_and_called_labels_stay():
     ]
     assert set(labeled.cat.categories) == {"plastid", "unknown", NA_LABEL}
     assert "n/a" not in set(labeled.cat.categories)
+
+
+def _min_pairwise_distance(colors):
+    best = None
+    for index, left in enumerate(colors):
+        for right in colors[index + 1:]:
+            distance = float(np.linalg.norm(left.astype(float) - right.astype(float)))
+            best = distance if best is None else min(best, distance)
+    return best
+
+
+def test_glasbey_palette_separates_labels_and_leaves_na_grey():
+    labels = ["a", "b", "c", "d"]
+    key = _categorical_color_key([NA_LABEL, *labels], "glasbey")
+
+    assert key[NA_LABEL] == NA_COLOR
+    colors = [key[label] for label in labels]
+    assert NA_COLOR not in colors
+    assert len(set(colors)) == 4
+    assert GLASBEY_LIGHT_GREEN not in colors[:4]
+    rgbs = [np.array([int(color[i:i + 2], 16) for i in (1, 3, 5)]) for color in colors]
+    assert _min_pairwise_distance(rgbs) >= 40
 
 
 def test_na_keeps_the_shared_grey_and_does_not_take_a_palette_slot():

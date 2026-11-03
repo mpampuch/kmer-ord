@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from kmer_ord.vis.categorical_palettes import GLASBEY_LIGHT_GREEN, categorical_hex_colors
 from kmer_ord.vis.embedding_plots import (
     MAX_CATEGORICAL_AGG_BYTES,
     _plottable_feature_columns,
@@ -63,3 +64,5 @@ class TestCategoricalMemoryGuard:
             df, "x", "y", "feature", mode="categorical")
         assert img is not None
         assert set(color_key) == {"cat_0", "cat_1", "cat_2"}
+        expected = categorical_hex_colors(3, "glasbey")
+        assert [color_key[f"cat_{i}"] for i in range(3)] == expected
