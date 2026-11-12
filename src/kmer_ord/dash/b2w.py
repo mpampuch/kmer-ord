@@ -3,8 +3,12 @@ import dash
 from dash import dcc, html, Input, Output, State, ctx, ALL, MATCH
 import dash_bootstrap_components as dbc
 import pandas as pd
+import copy
 import os
 import sqlite3
+import threading
+import time
+import traceback
 import plotly.graph_objects as go
 import datashader as ds
 import datashader.transfer_functions as tf
@@ -24,6 +28,7 @@ from kmer_ord.vis.categorical_palettes import (
     categorical_hex_colors,
 )
 from kmer_ord.vis.embedding_plots import NA_COLOR, NA_LABEL
+from kmer_ord.utils.logging_utils import info, warn
 
 def run_dash_app(db_path: str, output_dir: str, host="127.0.0.1", port=8050):
     global GLOBAL_DB_PATH, output_dir_default
@@ -37,7 +42,10 @@ def run_dash_app(db_path: str, output_dir: str, host="127.0.0.1", port=8050):
 
     print_banner(host=host, port=port)
 
-    app.run(host=host, port=port, debug=False)
+    # Interval requests must be served while export runs on a background thread.
+    # Without threaded=True a one-thread server holds the export POST and the
+    # status strip stays on "Export started…" until the file write finishes.
+    app.run(host=host, port=port, debug=False, threaded=True)
 
 def print_banner(host="127.0.0.1", port=8050):
     title = "BIN2WIN"
@@ -886,13 +894,26 @@ def build_plot_grid_from_serialized(serialized_plots):
 ##############################
 
 def _status_bar(msg: str):
-    """Return a slim single-line status strip, or None if msg is empty."""
+    """Return a slim single-line status strip, or None if msg is empty.
+
+    Finished exports stay green. In-progress export lines are blue so a long
+    job does not look like an error until it finishes or fails.
+    """
     if not msg:
         return None
     msg_lower = msg.lower()
-    if "successfully" in msg_lower or "exported" in msg_lower:
+    in_progress = (
+        msg_lower.startswith("export started")
+        or "spatial query" in msg_lower
+        or "wrote csv" in msg_lower
+        or "fasta chunk" in msg_lower
+        or msg_lower.startswith("bin ")
+    )
+    if "fail" in msg_lower or "already running" in msg_lower:
+        accent, text_col = "#7b3f00", "#ffcc80"   # amber
+    elif "successfully" in msg_lower or "exported" in msg_lower:
         accent, text_col = "#2e7d32", "#a5d6a7"   # green
-    elif "found" in msg_lower and "0 points" not in msg_lower:
+    elif ("found" in msg_lower and "0 points" not in msg_lower) or in_progress:
         accent, text_col = "#1565c0", "#90caf9"   # blue
     else:
         accent, text_col = "#7b3f00", "#ffcc80"   # amber
@@ -1578,6 +1599,13 @@ def build_layout():
             store_bins,
             store_overlay,
             store_base_plots, #NEW
+            # Disabled until Export is clicked. Polls the in-process progress
+            # dict so the status strip can move while the export thread runs.
+            dcc.Interval(
+                id="export-progress-interval",
+                interval=1000,
+                disabled=True,
+            ),
         ]
     )
     return layout
@@ -2131,10 +2159,10 @@ def _has_quality_string(value) -> bool:
     return str(value).strip() != ""
 
 
-def _bin_record_header(row, has_full_header: bool) -> str:
-    if has_full_header and not pd.isna(row["full_header"]):
-        return str(row["full_header"])
-    return str(row["header"])
+def _bin_record_header(header, full_header, has_full_header: bool) -> str:
+    if has_full_header and not pd.isna(full_header):
+        return str(full_header)
+    return str(header)
 
 
 def write_bin_sequences(records: pd.DataFrame, out_dir: str, bin_name: str) -> str:
@@ -2142,6 +2170,10 @@ def write_bin_sequences(records: pd.DataFrame, out_dir: str, bin_name: str) -> s
 
     A file named .fastq that also contains '>' records is not valid FASTQ,
     so a partial quality column falls back to FASTA for the whole bin.
+
+    iterrows() builds a Series per read and dominated export time after the
+    CSV had already been written. Zip the columns instead. The format rule
+    is unchanged.
     """
     has_full_header = "full_header" in records.columns
     write_fastq = (
@@ -2150,21 +2182,36 @@ def write_bin_sequences(records: pd.DataFrame, out_dir: str, bin_name: str) -> s
         and bool(records["qualities"].map(_has_quality_string).all())
     )
 
+    # An empty frame has nothing to zip. Skip the column reads so a header-less
+    # empty frame still produces an empty FASTA, matching the old iterrows path.
+    if records.empty:
+        headers = []
+        sequences = []
+        full_headers = None
+        qualities = None
+    else:
+        headers = records["header"].tolist()
+        sequences = records["sequence"].tolist()
+        full_headers = records["full_header"].tolist() if has_full_header else None
+        qualities = records["qualities"].tolist() if write_fastq else None
+
     if write_fastq:
         out_path = os.path.join(out_dir, f"{bin_name}.fastq")
         with open(out_path, "w") as handle:
-            for _, row in records.iterrows():
-                header = _bin_record_header(row, has_full_header)
+            for index, header in enumerate(headers):
+                full_header = full_headers[index] if full_headers is not None else None
+                resolved = _bin_record_header(header, full_header, has_full_header)
                 handle.write(
-                    f"@{header}\n{row['sequence']}\n+\n{row['qualities']}\n"
+                    f"@{resolved}\n{sequences[index]}\n+\n{qualities[index]}\n"
                 )
         return out_path
 
     out_path = os.path.join(out_dir, f"{bin_name}.fasta")
     with open(out_path, "w") as handle:
-        for _, row in records.iterrows():
-            header = _bin_record_header(row, has_full_header)
-            handle.write(f">{header}\n{row['sequence']}\n")
+        for index, header in enumerate(headers):
+            full_header = full_headers[index] if full_headers is not None else None
+            resolved = _bin_record_header(header, full_header, has_full_header)
+            handle.write(f">{resolved}\n{sequences[index]}\n")
     return out_path
 
 
@@ -2180,6 +2227,306 @@ def bin_export_format_note(paths) -> str:
     return "FASTQ and FASTA"
 
 
+# SQLite binds at most 999 variables. 900 leaves room for the rest of the query.
+FASTA_EXPORT_CHUNK_SIZE = 900
+# A multi-million-read bin would otherwise write one log line per chunk.
+FASTA_CHUNK_LOG_EVERY = 10
+EXPORT_STARTED = "Export started…"
+EXPORT_ALREADY_RUNNING = "Export already running."
+
+_export_lock = threading.Lock()
+_export_thread = None
+
+
+def _fresh_export_state():
+    return {
+        "running": False,
+        "message": "",
+        "stage": "idle",
+        "bin_index": None,
+        "bin_total": None,
+        "error": None,
+        "history": [],
+    }
+
+
+_export_state = _fresh_export_state()
+
+
+def reset_export_progress() -> None:
+    """Clear the in-process export status. Tests call this between cases."""
+    global _export_state, _export_thread
+    with _export_lock:
+        _export_state = _fresh_export_state()
+        _export_thread = None
+
+
+def export_progress_snapshot() -> dict:
+    with _export_lock:
+        snapshot = {key: value for key, value in _export_state.items() if key != "history"}
+        snapshot["history"] = list(_export_state["history"])
+        return snapshot
+
+
+def export_progress_history() -> list:
+    with _export_lock:
+        return list(_export_state["history"])
+
+
+def wait_for_export(timeout: float = 5.0) -> None:
+    """Block until the current export thread finishes. Used by tests."""
+    with _export_lock:
+        thread = _export_thread
+    if thread is None:
+        return
+    thread.join(timeout)
+    if thread.is_alive():
+        raise TimeoutError("bin export did not finish")
+
+
+def _should_log_fasta_chunk(index: int, n_chunks: int, every: int = FASTA_CHUNK_LOG_EVERY) -> bool:
+    """Log every chunk when there are few; otherwise the first, last, and every Nth.
+
+    ``index`` is 1-based.
+    """
+    if n_chunks <= every:
+        return True
+    return index == 1 or index == n_chunks or index % every == 0
+
+
+def _note_export_progress(message, *, stage, bin_index=None, bin_total=None, log=True):
+    """Record the latest stage. ``log=False`` updates the GUI line without a log row."""
+    if log:
+        info(message)
+    with _export_lock:
+        _export_state["message"] = message
+        _export_state["stage"] = stage
+        if bin_index is not None:
+            _export_state["bin_index"] = bin_index
+        if bin_total is not None:
+            _export_state["bin_total"] = bin_total
+        if log:
+            _export_state["history"].append(message)
+
+
+def _finish_export(message, error=None):
+    with _export_lock:
+        _export_state["running"] = False
+        _export_state["message"] = message
+        _export_state["stage"] = "error" if error else "complete"
+        _export_state["error"] = error
+        _export_state["history"].append(message)
+
+
+def _export_finished_message(output_dir, sequence_paths) -> str:
+    format_note = bin_export_format_note(sequence_paths)
+    return (
+        f"Bins exported to {output_dir} "
+        f"({format_note}; using full headers when available)."
+    )
+
+
+def _load_bin_fasta(db_path, headers, bin_name, chunk_size, bin_index, bin_total):
+    """Read fasta rows in SQL batches. The chunk line is logged before each query."""
+    conn = get_connection(db_path)
+    try:
+        cursor = conn.cursor()
+        cursor.execute("PRAGMA table_info(fasta);")
+        cols = [row[1] for row in cursor.fetchall()]
+        select_cols = ["header", "sequence"]
+        if "full_header" in cols:
+            select_cols.insert(1, "full_header")
+        if "qualities" in cols:
+            select_cols.append("qualities")
+        select_sql = ", ".join(select_cols)
+
+        n_chunks = ceil(len(headers) / chunk_size)
+        frames = []
+        for chunk_index, start in enumerate(range(0, len(headers), chunk_size), start=1):
+            batch = headers[start:start + chunk_size]
+            _note_export_progress(
+                f"Bin '{bin_name}': fasta chunk {chunk_index}/{n_chunks}",
+                stage="fasta",
+                bin_index=bin_index,
+                bin_total=bin_total,
+                log=_should_log_fasta_chunk(chunk_index, n_chunks),
+            )
+            placeholders = ", ".join("?" * len(batch))
+            query = (
+                f"SELECT {select_sql} FROM fasta "
+                f"WHERE header IN ({placeholders});"
+            )
+            frame = pd.read_sql_query(query, conn, params=batch)
+            if not frame.empty:
+                frames.append(frame)
+        if not frames:
+            return pd.DataFrame()
+        return pd.concat(frames, ignore_index=True)
+    finally:
+        conn.close()
+
+
+def run_bin_export(bins_data, db_path, output_dir, chunk_size=FASTA_EXPORT_CHUNK_SIZE) -> str:
+    """Export every bin. Each stage is logged before the next one starts."""
+    os.makedirs(output_dir, exist_ok=True)
+    n_bins = len(bins_data)
+    sequence_paths = []
+    _note_export_progress(
+        f"Export started: {n_bins} bin(s) -> {output_dir}",
+        stage="start",
+        bin_total=n_bins,
+    )
+
+    for bin_index, bin_entry in enumerate(bins_data, start=1):
+        name = bin_entry["bin_name"]
+        coordinate_system = bin_entry.get("coordinate_system")
+        polygon = bin_entry.get("polygon") or []
+        filters = _format_bin_filters(bin_entry.get("filters")) or "none"
+        _note_export_progress(
+            (
+                f"Bin {bin_index}/{n_bins} '{name}': {coordinate_system}, "
+                f"{len(polygon)} polygon points, filters: {filters}"
+            ),
+            stage="bin",
+            bin_index=bin_index,
+            bin_total=n_bins,
+        )
+
+        started = time.perf_counter()
+        df_filt = efficient_spatialite_export(
+            db_path=db_path,
+            coordinate_systems=[coordinate_system],
+            polygons={coordinate_system: polygon},
+            feature_col=None,
+            filter_values=bin_entry.get("filters"),
+        )
+        _note_export_progress(
+            (
+                f"Bin '{name}': spatial query finished in "
+                f"{time.perf_counter() - started:.1f}s, {len(df_filt)} rows"
+            ),
+            stage="spatial",
+            bin_index=bin_index,
+            bin_total=n_bins,
+        )
+
+        csv_path = os.path.join(output_dir, f"{name}.csv")
+        df_filt.to_csv(csv_path, index=False)
+        _note_export_progress(
+            f"Bin '{name}': wrote CSV {csv_path} ({os.path.getsize(csv_path)} bytes)",
+            stage="csv",
+            bin_index=bin_index,
+            bin_total=n_bins,
+        )
+
+        if "header" not in df_filt.columns:
+            _note_export_progress(
+                f"Bin '{name}': spatial result has no header column; skipped sequences",
+                stage="sequences",
+                bin_index=bin_index,
+                bin_total=n_bins,
+            )
+            continue
+
+        headers = df_filt["header"].unique().tolist()
+        if not headers:
+            _note_export_progress(
+                f"Bin '{name}': spatial query returned no sequences",
+                stage="sequences",
+                bin_index=bin_index,
+                bin_total=n_bins,
+            )
+            continue
+
+        fasta_df = _load_bin_fasta(
+            db_path,
+            headers,
+            name,
+            chunk_size,
+            bin_index=bin_index,
+            bin_total=n_bins,
+        )
+        if fasta_df.empty:
+            _note_export_progress(
+                f"Bin '{name}': no sequences found for {len(headers)} headers",
+                stage="sequences",
+                bin_index=bin_index,
+                bin_total=n_bins,
+            )
+            continue
+
+        write_started = time.perf_counter()
+        out_path = write_bin_sequences(fasta_df, output_dir, name)
+        sequence_paths.append(out_path)
+        suffix = os.path.splitext(out_path)[1].lstrip(".").upper()
+        _note_export_progress(
+            (
+                f"Bin '{name}': wrote {out_path} "
+                f"({suffix}, {len(fasta_df)} rows, {time.perf_counter() - write_started:.1f}s)"
+            ),
+            stage="sequences",
+            bin_index=bin_index,
+            bin_total=n_bins,
+        )
+
+    message = _export_finished_message(output_dir, sequence_paths)
+    _note_export_progress(f"Export complete: {message}", stage="complete")
+    return message
+
+
+def _export_worker(bins_data, db_path, output_dir, chunk_size):
+    try:
+        message = run_bin_export(
+            bins_data, db_path, output_dir, chunk_size=chunk_size
+        )
+        _finish_export(message)
+    except Exception as exc:
+        details = traceback.format_exc()
+        warn(f"Export failed: {exc}")
+        info(details)
+        _finish_export(f"Export failed: {exc}", error=details)
+
+
+def start_bin_export(bins_data, db_path, output_dir, chunk_size=FASTA_EXPORT_CHUNK_SIZE) -> str:
+    """Start one export thread. A second call while it runs does not start another.
+
+    The click handler returns immediately. Dash cannot change the status strip
+    until that handler returns, and a single-thread server would not serve the
+    progress interval until the POST finished.
+    """
+    global _export_thread
+    payload = copy.deepcopy(list(bins_data))
+    with _export_lock:
+        if _export_state["running"]:
+            already_running = True
+        else:
+            already_running = False
+            _export_state["running"] = True
+            _export_state["message"] = EXPORT_STARTED
+            _export_state["stage"] = "start"
+            _export_state["bin_index"] = None
+            _export_state["bin_total"] = len(payload)
+            _export_state["error"] = None
+            _export_state["history"] = [EXPORT_STARTED]
+            _export_thread = None
+    if already_running:
+        warn(EXPORT_ALREADY_RUNNING)
+        return EXPORT_ALREADY_RUNNING
+
+    # Log before start() so this line cannot land after the worker's first stage.
+    info(EXPORT_STARTED)
+    thread = threading.Thread(
+        target=_export_worker,
+        args=(payload, db_path, output_dir, chunk_size),
+        daemon=True,
+        name="bin-export",
+    )
+    with _export_lock:
+        _export_thread = thread
+    thread.start()
+    return EXPORT_STARTED
+
+
 ##############################
 # BINS + INSPECT + EXPORT (FASTQ OR FASTA, CHUNKED, FULL HEADER)
 ##############################
@@ -2188,7 +2535,9 @@ def bin_export_format_note(paths) -> str:
         Output('bins-store','data'),
         Output('error-message','children'),
         Output('bin-table-container','children'),
-        Output('bin-list-container','children')
+        Output('bin-list-container','children'),
+        Output('export-progress-interval', 'disabled'),
+        Output('bin-name-input', 'value'),
     ],
     [
         Input('create-bin-button','n_clicks'),
@@ -2223,6 +2572,8 @@ def handle_bin_operations(
     ctx_trig = ctx.triggered_id
     error_message = ""
     table_content = None
+    interval_disabled = dash.no_update
+    bin_name_value = dash.no_update
     if not bins_data:
         bins_data = []
 
@@ -2272,6 +2623,7 @@ def handle_bin_operations(
                 "polygon": polygon
             })
             error_message = f"Bin '{bin_name}' created successfully."
+            bin_name_value = ""
 
     elif ctx_trig == 'inspect-bin-button':
         active_lassos = [
@@ -2316,81 +2668,39 @@ def handle_bin_operations(
                 error_message = "Inspect Bin: 0 points found."
 
     elif ctx_trig == 'export-bins-button':
+        # Return as soon as the thread is running. The interval callback below
+        # is what moves the status strip; this POST cannot do that itself.
         if not bins_data:
             error_message = "No bins to export."
         else:
-            os.makedirs(output_dir_default, exist_ok=True)
-            sequence_paths = []
-
-            for bin_entry in bins_data:
-                df_filt = efficient_spatialite_export(
-                    db_path=GLOBAL_DB_PATH,
-                    coordinate_systems=[bin_entry["coordinate_system"]],
-                    polygons={bin_entry["coordinate_system"]: bin_entry["polygon"]},
-                    feature_col=None,
-                    filter_values=bin_entry["filters"]
-                )
-
-                csv_path = os.path.join(
-                    output_dir_default,
-                    f"{bin_entry['bin_name']}.csv"
-                )
-                df_filt.to_csv(csv_path, index=False)
-
-                if 'header' in df_filt:
-                    headers = df_filt['header'].unique().tolist()
-                    if headers:
-                        conn = get_connection(GLOBAL_DB_PATH)
-                        try:
-                            cursor = conn.cursor()
-                            cursor.execute("PRAGMA table_info(fasta);")
-                            cols = [r[1] for r in cursor.fetchall()]
-                            has_qualities_col = 'qualities' in cols
-                            has_full_header_col = 'full_header' in cols
-
-                            select_cols_list = ["header", "sequence"]
-                            if has_full_header_col:
-                                select_cols_list.insert(1, "full_header")
-                            if has_qualities_col:
-                                select_cols_list.append("qualities")
-                            select_cols = ", ".join(select_cols_list)
-
-                            chunk_size = 900
-                            dfs = []
-                            for i in range(0, len(headers), chunk_size):
-                                batch = headers[i:i + chunk_size]
-                                placeholders = ", ".join("?" * len(batch))
-                                fasta_q = (
-                                    f"SELECT {select_cols} FROM fasta "
-                                    f"WHERE header IN ({placeholders});"
-                                )
-                                df_chunk = pd.read_sql_query(
-                                    fasta_q, conn, params=batch
-                                )
-                                if not df_chunk.empty:
-                                    dfs.append(df_chunk)
-
-                            if not dfs:
-                                continue
-
-                            fasta_df = pd.concat(dfs, ignore_index=True)
-                            sequence_paths.append(
-                                write_bin_sequences(
-                                    fasta_df,
-                                    output_dir_default,
-                                    bin_entry["bin_name"],
-                                )
-                            )
-                        finally:
-                            conn.close()
-
-            format_note = bin_export_format_note(sequence_paths)
-            error_message = (
-                f"Bins exported to {output_dir_default} "
-                f"({format_note}; using full headers when available)."
+            error_message = start_bin_export(
+                bins_data, GLOBAL_DB_PATH, output_dir_default
             )
+            if error_message == EXPORT_STARTED:
+                interval_disabled = False
 
-    return bins_data, _status_bar(error_message), table_content, _build_bin_list(bins_data)
+    return (
+        bins_data,
+        _status_bar(error_message),
+        table_content,
+        _build_bin_list(bins_data),
+        interval_disabled,
+        bin_name_value,
+    )
+
+
+@app.callback(
+    Output('error-message', 'children', allow_duplicate=True),
+    Output('export-progress-interval', 'disabled', allow_duplicate=True),
+    Input('export-progress-interval', 'n_intervals'),
+    prevent_initial_call=True,
+)
+def poll_export_progress(_n_intervals):
+    """Push the latest export line, then stop polling once the thread finishes."""
+    snapshot = export_progress_snapshot()
+    if snapshot["running"]:
+        return _status_bar(snapshot["message"]), False
+    return _status_bar(snapshot["message"]), True
 
 
 @app.callback(
